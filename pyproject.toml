@@ -38,9 +38,10 @@ fastembed = [
     "glow~=0.15.0",
     "huggingface-hub",
 ]
-responses = [
-    "llama-index-core~=0.13.0",
-    "pydantic~=2.10",
+tokenizer = [
+    "glow~=0.15.0",
+    "tiktoken",
+    "transformers",
 ]
 qdrant = [
     "grpcio",  # transitive
@@ -52,10 +53,15 @@ qdrant = [
     "qdrant-client~=1.15.1",
     "tenacity",
 ]
+responses = [
+    "llama-index-core~=0.13.0",
+    "pydantic~=2.10",
+]
 all = [
     "lmxy[fastembed]",
-    "lmxy[responses]",
     "lmxy[qdrant]",
+    "lmxy[responses]",
+    "lmxy[tokenizer]",
 ]
 dev-core = [
     "black~=25.1",

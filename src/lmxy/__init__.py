@@ -3,17 +3,25 @@ from typing import TYPE_CHECKING
 
 from ._parsers import no_think
 from ._queue import MulticastQueue
-from ._types import LlmFunction, LlmResponse, SparseEncode, VectorStore
+from ._types import (
+    LlmFunction,
+    LlmResponse,
+    SparseEncode,
+    Tokenize,
+    VectorStore,
+)
 
 if TYPE_CHECKING:
     from ._responses import unpack_response
     from .fastembed import get_sparse_encoder
     from .qdrant import QdrantVectorStore
+    from .tokenizer import get_tokenizer
 else:
     _exports = {
         '._responses': ['unpack_response'],
         '.fastembed': ['get_sparse_encoder'],
         '.qdrant': ['QdrantVectorStore'],
+        '.tokenizer': ['get_tokenizer'],
     }
     _submodule_by_name = {
         name: modname for modname, names in _exports.items() for name in names
@@ -36,8 +44,10 @@ __all__ = [
     'MulticastQueue',
     'QdrantVectorStore',
     'SparseEncode',
+    'Tokenize',
     'VectorStore',
     'get_sparse_encoder',
+    'get_tokenizer',
     'no_think',
     'unpack_response',
 ]

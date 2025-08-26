@@ -5,7 +5,7 @@ __all__ = [
 ]
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
-from typing import TYPE_CHECKING, Protocol, Union
+from typing import TYPE_CHECKING, Any, Protocol, Union
 
 if TYPE_CHECKING:
     from llama_index.core.base.response.schema import (
@@ -40,6 +40,7 @@ type LlmResponse = Union[  # noqa: UP007
 type LlmFunction[**P] = Callable[
     P, Awaitable[LlmResponse | AsyncIterator[str]] | AsyncIterator[str]
 ]
+type Tokenize = Callable[[str], list[Any]]
 
 
 class VectorStore(Protocol):
