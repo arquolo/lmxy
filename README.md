@@ -1,3 +1,3 @@
 # Language model extensions
 
-- Python 3.12 and higher
+Some useful integrations for llama-index.

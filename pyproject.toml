@@ -33,6 +33,11 @@ dependencies = []
 homepage = "https://github.com/arquolo/lmx"
 
 [project.optional-dependencies]
+fastembed = [
+    "fastembed~=0.7.0",
+    "glow~=0.15.0",
+    "huggingface-hub",
+]
 dev-core = [
     "black~=25.1",
     "flake8~=7.0",
