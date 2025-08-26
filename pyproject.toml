@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 only-packages = true
 
 [project]
-name = "lmx"
+name = "lmxy"
 version = "0.1.0"
 description = "Language models extensions"
 readme = "README.md"
@@ -40,7 +40,7 @@ fastembed = [
 ]
 qdrant = [
     "grpcio",  # transitive
-    "lmx[fastembed]",
+    "lmxy[fastembed]",
     "llama-index-core~=0.13.0",
     "httpx",  # transitive
     "orjson",
@@ -49,8 +49,8 @@ qdrant = [
     "tenacity",
 ]
 all = [
-    "lmx[fastembed]",
-    "lmx[qdrant]",
+    "lmxy[fastembed]",
+    "lmxy[qdrant]",
 ]
 dev-core = [
     "black~=25.1",
@@ -66,13 +66,13 @@ dev-core = [
     "ruff~=0.12.2",
 ]
 dev = [
-    "lmx[dev-core]",
+    "lmxy[dev-core]",
     "flake8-alphabetize",
     # "flake8-class-attributes-order",
     # "flake8-newspaper-style",
 ]
 dev-wemake = [
-    "lmx[dev-core]",
+    "lmxy[dev-core]",
     "wemake-python-styleguide~=1.3.0",
 ]
 
