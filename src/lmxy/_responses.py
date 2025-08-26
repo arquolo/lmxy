@@ -1,14 +1,11 @@
 __all__ = ['unpack_response']
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable
 
 from llama_index.core.base.response.schema import (
     AsyncStreamingResponse,
     PydanticResponse,
     Response,
-)
-from llama_index.core.base.response.schema import (
-    StreamingResponse as SyncStreamingResponse,
 )
 from llama_index.core.chat_engine.types import (
     AgentChatResponse,
@@ -17,22 +14,11 @@ from llama_index.core.chat_engine.types import (
 from llama_index.core.schema import NodeWithScore
 from pydantic import BaseModel
 
-type LlmResponse = (
-    Response
-    | PydanticResponse
-    | SyncStreamingResponse
-    | AsyncStreamingResponse
-    | AgentChatResponse
-    | StreamingAgentChatResponse
-    | str
-)
-type _LlmFunc[**P] = Callable[
-    P, Awaitable[LlmResponse | AsyncIterator[str]] | AsyncIterator[str]
-]
+from ._types import LlmFunction
 
 
 async def unpack_response[**P](
-    f: _LlmFunc[P], *args: P.args, **kwargs: P.kwargs
+    f: LlmFunction[P], *args: P.args, **kwargs: P.kwargs
 ) -> tuple[
     AsyncIterator[str] | str,
     list[NodeWithScore],

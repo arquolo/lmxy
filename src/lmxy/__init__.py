@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from ._parsers import no_think
 from ._queue import MulticastQueue
-from ._types import SparseEncode, VectorStore
+from ._types import LlmFunction, LlmResponse, SparseEncode, VectorStore
 
 if TYPE_CHECKING:
     from ._responses import unpack_response
@@ -31,6 +31,8 @@ else:
 
 
 __all__ = [
+    'LlmFunction',
+    'LlmResponse',
     'MulticastQueue',
     'QdrantVectorStore',
     'SparseEncode',
