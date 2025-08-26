@@ -38,6 +38,20 @@ fastembed = [
     "glow~=0.15.0",
     "huggingface-hub",
 ]
+qdrant = [
+    "grpcio",  # transitive
+    "lmx[fastembed]",
+    "llama-index-core~=0.13.0",
+    "httpx",  # transitive
+    "orjson",
+    "pydantic~=2.10",
+    "qdrant-client~=1.15.1",
+    "tenacity",
+]
+all = [
+    "lmx[fastembed]",
+    "lmx[qdrant]",
+]
 dev-core = [
     "black~=25.1",
     "flake8~=7.0",
