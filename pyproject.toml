@@ -38,6 +38,10 @@ fastembed = [
     "glow~=0.15.0",
     "huggingface-hub",
 ]
+responses = [
+    "llama-index-core~=0.13.0",
+    "pydantic~=2.10",
+]
 qdrant = [
     "grpcio",  # transitive
     "lmxy[fastembed]",
@@ -50,6 +54,7 @@ qdrant = [
 ]
 all = [
     "lmxy[fastembed]",
+    "lmxy[responses]",
     "lmxy[qdrant]",
 ]
 dev-core = [

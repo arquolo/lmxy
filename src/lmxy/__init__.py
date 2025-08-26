@@ -1,13 +1,17 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+from ._parsers import no_think
+from ._queue import MulticastQueue
 from ._types import SparseEncode, VectorStore
 
 if TYPE_CHECKING:
+    from ._responses import unpack_response
     from .fastembed import get_sparse_encoder
     from .qdrant import QdrantVectorStore
 else:
     _exports = {
+        '._responses': ['unpack_response'],
         '.fastembed': ['get_sparse_encoder'],
         '.qdrant': ['QdrantVectorStore'],
     }
@@ -27,8 +31,11 @@ else:
 
 
 __all__ = [
+    'MulticastQueue',
     'QdrantVectorStore',
     'SparseEncode',
     'VectorStore',
     'get_sparse_encoder',
+    'no_think',
+    'unpack_response',
 ]
