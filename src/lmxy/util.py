@@ -1,5 +1,7 @@
 __all__ = [
     'aretry',
+    'is_true',
+    'warn_immediate_errors',
 ]
 
 import logging
@@ -19,6 +21,13 @@ from tenacity import (
 
 type _Coro[**P, R] = Callable[P, Awaitable[R]]
 logger = logging.getLogger(__name__)
+_ENV_VARS_TRUE_VALUES = frozenset({'1', 'ON', 'YES', 'TRUE'})
+
+
+def is_true(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.upper() in _ENV_VARS_TRUE_VALUES
 
 
 def aretry[**X, Y](

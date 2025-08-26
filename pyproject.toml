@@ -36,7 +36,6 @@ homepage = "https://github.com/arquolo/lmx"
 fastembed = [
     "fastembed~=0.7.0",
     "glow~=0.15.0",
-    "huggingface-hub",
 ]
 tokenizer = [
     "glow~=0.15.0",
