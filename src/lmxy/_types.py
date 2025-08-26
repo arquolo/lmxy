@@ -1,6 +1,9 @@
 __all__ = [
     'BatchSparseEncoding',
+    'LlmFunction',
+    'LlmResponse',
     'SparseEncode',
+    'Tokenize',
     'VectorStore',
 ]
 

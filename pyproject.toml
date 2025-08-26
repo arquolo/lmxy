@@ -27,7 +27,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
 ]
-dependencies = []
+dependencies = [
+    "pydantic~=2.10",
+    "tenacity",
+]
 
 [project.urls]
 homepage = "https://github.com/arquolo/lmx"
@@ -42,22 +45,26 @@ tokenizer = [
     "tiktoken",
     "transformers",
 ]
+openailike = [
+    "lmxy[tokenizer]",
+    "httpx",
+    "openai~=1.102",
+    "transformers",
+]
 qdrant = [
     "grpcio",  # transitive
     "lmxy[fastembed]",
     "llama-index-core~=0.13.0",
     "httpx",  # transitive
     "orjson",
-    "pydantic~=2.10",
     "qdrant-client~=1.15.1",
-    "tenacity",
 ]
 responses = [
     "llama-index-core~=0.13.0",
-    "pydantic~=2.10",
 ]
 all = [
     "lmxy[fastembed]",
+    "lmxy[openailike]",
     "lmxy[qdrant]",
     "lmxy[responses]",
     "lmxy[tokenizer]",

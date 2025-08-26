@@ -14,12 +14,14 @@ from ._types import (
 if TYPE_CHECKING:
     from ._responses import unpack_response
     from .fastembed import get_sparse_encoder
+    from .openailike import OpenAiLike
     from .qdrant import QdrantVectorStore
     from .tokenizer import get_tokenizer
 else:
     _exports = {
         '._responses': ['unpack_response'],
         '.fastembed': ['get_sparse_encoder'],
+        '.openailike': ['OpenAiLike'],
         '.qdrant': ['QdrantVectorStore'],
         '.tokenizer': ['get_tokenizer'],
     }
@@ -42,6 +44,7 @@ __all__ = [
     'LlmFunction',
     'LlmResponse',
     'MulticastQueue',
+    'OpenAiLike',
     'QdrantVectorStore',
     'SparseEncode',
     'Tokenize',
