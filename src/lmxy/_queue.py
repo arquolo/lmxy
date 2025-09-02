@@ -1,9 +1,9 @@
 __all__ = ['MulticastQueue']
 
-from asyncio import CancelledError, Future
-from collections.abc import AsyncIterator, Iterator
-from contextlib import contextmanager
-from typing import Literal
+from asyncio import CancelledError, Future, QueueShutDown
+from collections.abc import AsyncGenerator, Awaitable, Iterable
+from typing import Literal, Self
+from weakref import finalize
 
 
 class MulticastQueue[T]:
@@ -11,60 +11,139 @@ class MulticastQueue[T]:
 
     Each consumer gets each message put by producer.
     Late joined consumer gets all messages from the beginning.
+
+    Usage:
+
+        mq = MulticastQueue()
+        async def worker():
+            with mq:
+                for x in range(3):
+                    mq.put(x)
+
+        t = asyncio.create_task(worker())
+        assert [x async for x in mq] == [0, 1, 2]
+        assert [x async for x in mq] == [0, 1, 2]
+
     """
 
     def __init__(self) -> None:
         self._buf: list[T] = []
-        self._state: Literal['pending', 'running', 'done'] = 'pending'
-        self._waiters = set[Future[None]]()
-        self._num_waiters = 0
+        self._pos = 0
+        self._putters = set[Future[None]]()
+        self._getters = set[Future[T]]()
+        self._state: Literal['running', 'done', 'closed'] = 'running'
+        self._nsubs = 0
 
-    async def __aiter__(self) -> AsyncIterator[T]:
-        pos = 0
-        with self.subscribe():
-            while True:
-                if pos < len(self._buf):
-                    yield self._buf[pos]
-                    pos += 1
-                elif self._state != 'done':
-                    await self._wait_data()
-                else:
-                    return
+    # ------------------------------- consumer -------------------------------
 
-    @contextmanager
-    def subscribe(self) -> Iterator[None]:
-        self._num_waiters += 1
-        try:
-            yield
-        finally:
-            self._num_waiters -= 1
+    async def __aiter__(self) -> AsyncGenerator[T]:
+        # finally doesn't work unless `aclose` is manually called,
+        # or anything is `await`ed (even via `asyncio.sleep(0.001)`)
+        with _QueueIterator(self) as it:
+            async for x in it:
+                yield x
 
-    async def put(self, msg: T) -> None:
-        if self._state == 'done':
-            raise RuntimeError('Cannot put message to closed stream')
+    def subscribe(self) -> '_QueueIterator[T]':
+        return _QueueIterator(self)
 
-        if self._state == 'running' and not self._num_waiters:
+    def aget(self, idx: int) -> Awaitable[T]:
+        self._pos = max(self._pos, idx)
+
+        if idx < len(self._buf):  # Read from buffer
+            value = self._buf[idx]
+            f = Future[T]()
+            f.set_result(value)
+            return f
+
+        if self._state == 'closed':  # Closed before finish
+            raise QueueShutDown
+
+        if self._state == 'done':  # Finished
+            raise IndexError
+
+        # Wait for the new data
+        _release_all(self._putters, None)
+        return _acquire(self._getters)
+
+    # ------------------------------- producer -------------------------------
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(self, *_) -> None:
+        if self._state == 'running':
             self._state = 'done'
-            self._notify_all()
-            raise CancelledError('All waiters exited')
+            assert not self._putters
+            _cancel_all(self._getters, msg='Queue is finalized')
 
-        self._state = 'running'
-        self._buf.append(msg)
-        self._notify_all()
+    def put(self, value: T) -> Awaitable[None]:
+        if self._state != 'running':
+            raise QueueShutDown
 
-    def close(self) -> None:
-        self._state = 'done'
-        self._notify_all()
+        # Pass value to all getters
+        self._buf.append(value)
+        _release_all(self._getters, value)
 
-    async def _wait_data(self) -> None:
-        f = Future[None]()
-        self._waiters.add(f)
+        # Wait till all of them succeed
+        return _acquire(self._putters)
+
+    # ------------------------------- private --------------------------------
+
+    def incref(self) -> None:
+        self._nsubs += 1
+
+    def decref(self) -> None:
+        self._nsubs -= 1
+
+        # No waiters, close
+        if not self._nsubs and self._state == 'running':
+            self._state = 'closed'
+            assert not self._getters
+            _cancel_all(self._putters, msg='No waiters to store values for')
+
+
+class _QueueIterator[T]:
+    def __init__(self, mq: MulticastQueue[T]) -> None:
+        self._mq = mq
+        self._pos = 0
+        mq.incref()
+        self.close = finalize(self, mq.decref)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
+    def __aiter__(self) -> Self:
+        return self
+
+    async def __anext__(self) -> T:
         try:
-            await f
-        finally:
-            self._waiters.discard(f)
+            value = await self._mq.aget(self._pos)
+        except (IndexError, CancelledError):
+            raise StopAsyncIteration from None
+        else:
+            self._pos += 1
+            return value
 
-    def _notify_all(self) -> None:
-        for f in self._waiters:
-            if not f.done():
-                f.set_result(None)
+
+async def _acquire[T](waiters: set[Future[T]]) -> T:
+    f = Future[T]()
+    waiters.add(f)
+    try:
+        return await f
+    finally:
+        f.cancel()
+        waiters.discard(f)
+
+
+def _release_all[T](waiters: Iterable[Future[T]], value: T) -> None:
+    for f in waiters:
+        if not f.done():
+            f.set_result(value)
+
+
+def _cancel_all(waiters: Iterable[Future], msg: str | None = None) -> None:
+    for f in waiters:
+        f.cancel(msg)
