@@ -1,9 +1,10 @@
 import asyncio
-from asyncio import CancelledError, QueueShutDown
+from asyncio import CancelledError
 
 import pytest
 
 from lmxy import MulticastQueue
+from lmxy._queue import QueueShutdownError
 
 
 async def worker(mq: MulticastQueue[int], total: int) -> None:
@@ -51,13 +52,20 @@ async def test_overlap():
 
 
 @pytest.mark.asyncio
-async def test_broken_sub_anext():
+@pytest.mark.parametrize('use_ctx', [False, True])
+async def test_broken_sub_anext(use_ctx: bool):
     mq = MulticastQueue[int]()
     t = asyncio.create_task(worker(mq, 2))
 
-    qi1 = mq.subscribe()
-    x1 = await anext(qi1)
-    assert x1 == 0
+    ag1 = mq.subscribe()
+    if use_ctx:
+        with ag1:
+            x1 = await anext(ag1)
+            assert x1 == 0
+    else:
+        x1 = await anext(ag1)
+        assert x1 == 0
+        del ag1
 
     await asyncio.sleep(0.001)  # Awake worker
 
@@ -65,45 +73,18 @@ async def test_broken_sub_anext():
     try:
         x2 = await anext(ag2)
         assert x2 == 0
-        x2 = await anext(ag2)
-        assert x2 == 1
-        with pytest.raises(StopAsyncIteration):
+        with pytest.raises(QueueShutdownError):
             x2 = await anext(ag2)
     finally:
         await ag2.aclose()
 
-    await t
-
-
-@pytest.mark.asyncio
-async def test_broken_sub_with_anext():
-    mq = MulticastQueue[int]()
-    t = asyncio.create_task(worker(mq, 2))
-
-    with mq.subscribe() as qi1:
-        x1 = await anext(qi1)
-    assert x1 == 0
-
-    await asyncio.sleep(0.001)  # Awake worker
-
-    ag2 = aiter(mq)
-    try:
-        x2 = await anext(ag2)
-        assert x2 == 0
-        # x2 = await anext(ag2)
-        # assert x2 == 1
-        with pytest.raises(QueueShutDown):
-            x2 = await anext(ag2)
-    finally:
-        await ag2.aclose()
-
-    assert t.cancelled()
     with pytest.raises(CancelledError):
         await t
 
 
 @pytest.mark.asyncio
-async def test_broken_aiter_anext():
+@pytest.mark.parametrize('use_aclose', [False, True])
+async def test_broken_aiter_anext(use_aclose: bool):
     mq = MulticastQueue[int]()
     t = asyncio.create_task(worker(mq, 2))
 
@@ -111,39 +92,17 @@ async def test_broken_aiter_anext():
     x1 = await anext(ag1)
     assert x1 == 0
 
-    del ag1
-    await asyncio.sleep(0.001)  # Awake worker
+    if use_aclose:
+        await ag1.aclose()
+    else:
+        del ag1
+        await asyncio.sleep(0.001)  # Awake worker
 
     ag2 = aiter(mq)
     try:
         x2 = await anext(ag2)
         assert x2 == 0
-        with pytest.raises(QueueShutDown):
-            x2 = await anext(ag2)
-    finally:
-        await ag2.aclose()
-
-    assert t.cancelled()
-    with pytest.raises(CancelledError):
-        await t
-
-
-@pytest.mark.asyncio
-async def test_broken_aiter_anext_aclose():
-    mq = MulticastQueue[int]()
-    t = asyncio.create_task(worker(mq, 2))
-
-    ag1 = aiter(mq)
-    x1 = await anext(ag1)
-    assert x1 == 0
-
-    await ag1.aclose()
-
-    ag2 = aiter(mq)
-    try:
-        x2 = await anext(ag2)
-        assert x2 == 0
-        with pytest.raises(QueueShutDown):
+        with pytest.raises(QueueShutdownError):
             x2 = await anext(ag2)
     finally:
         await ag2.aclose()

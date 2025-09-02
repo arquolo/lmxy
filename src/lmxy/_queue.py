@@ -1,9 +1,13 @@
 __all__ = ['MulticastQueue']
 
-from asyncio import CancelledError, Future, QueueShutDown
+from asyncio import CancelledError, Future
 from collections.abc import AsyncGenerator, Awaitable, Iterable
 from typing import Literal, Self
 from weakref import finalize
+
+
+class QueueShutdownError(Exception):
+    """Raised when putting on to or getting from a shut-down Queue."""
 
 
 class MulticastQueue[T]:
@@ -56,7 +60,7 @@ class MulticastQueue[T]:
             return f
 
         if self._state == 'closed':  # Closed before finish
-            raise QueueShutDown
+            raise QueueShutdownError
 
         if self._state == 'done':  # Finished
             raise IndexError
@@ -78,7 +82,7 @@ class MulticastQueue[T]:
 
     def put(self, value: T) -> Awaitable[None]:
         if self._state != 'running':
-            raise QueueShutDown
+            raise QueueShutdownError
 
         # Pass value to all getters
         self._buf.append(value)
@@ -146,4 +150,5 @@ def _release_all[T](waiters: Iterable[Future[T]], value: T) -> None:
 
 def _cancel_all(waiters: Iterable[Future], msg: str | None = None) -> None:
     for f in waiters:
+        f.cancel(msg)
         f.cancel(msg)
