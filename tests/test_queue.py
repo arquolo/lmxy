@@ -14,7 +14,7 @@ async def worker(mq: MulticastQueue[int], total: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_seq():
+async def test_seq() -> None:
     mq = MulticastQueue[int]()
     t = asyncio.create_task(worker(mq, 2))
 
@@ -28,7 +28,7 @@ async def test_seq():
 
 
 @pytest.mark.asyncio
-async def test_overlap():
+async def test_overlap() -> None:
     mq = MulticastQueue[int]()
     t = asyncio.create_task(worker(mq, 2))
 
@@ -53,7 +53,7 @@ async def test_overlap():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('use_ctx', [False, True])
-async def test_broken_sub_anext(use_ctx: bool):
+async def test_broken_sub_anext(use_ctx: bool) -> None:
     mq = MulticastQueue[int]()
     t = asyncio.create_task(worker(mq, 2))
 
@@ -84,7 +84,7 @@ async def test_broken_sub_anext(use_ctx: bool):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('use_aclose', [False, True])
-async def test_broken_aiter_anext(use_aclose: bool):
+async def test_broken_aiter_anext(use_aclose: bool) -> None:
     mq = MulticastQueue[int]()
     t = asyncio.create_task(worker(mq, 2))
 

@@ -5,21 +5,22 @@ __all__ = [
 ]
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from functools import update_wrapper
 from inspect import iscoroutinefunction
+from typing import Protocol, cast
 
 from httpx import HTTPError
 from tenacity import (
-    AsyncRetrying,
+    BaseRetrying,
     RetryCallState,
     RetryError,
+    retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_fixed,
 )
 
-type _Coro[**P, R] = Callable[P, Awaitable[R]]
 logger = logging.getLogger(__name__)
 _ENV_VARS_TRUE_VALUES = frozenset({'1', 'ON', 'YES', 'TRUE'})
 
@@ -30,37 +31,55 @@ def is_true(value: str | None) -> bool:
     return value.upper() in _ENV_VARS_TRUE_VALUES
 
 
-def aretry[**X, Y](
+class _Decorator(Protocol):
+    def __call__[**P, R](self, f: Callable[P, R], /) -> Callable[P, R]: ...
+
+
+def aretry(
     *extra_errors: type[BaseException],
     max_attempts: int = 10,
     wait: float = 1,
-) -> Callable[[_Coro[X, Y]], _Coro[X, Y]]:
-    """By default handles only HTTPError. To add more add more"""
+) -> _Decorator:
+    """Wrap sync or async function with a new `Retrying` object.
+
+    By default handles only HTTPError. To add more add more.
+    """
     # Protect to not accidentally call aretry(fn)
     assert all(
         isinstance(tp, type) and issubclass(tp, BaseException)
         for tp in extra_errors
     )
-    r = AsyncRetrying(
-        stop=stop_after_attempt(max_attempts),
-        wait=wait_fixed(wait),
-        retry=retry_if_exception_type((HTTPError, *extra_errors)),
-        before_sleep=warn_immediate_errors,
-    )
 
-    def deco[**P, R](fn: _Coro[P, R]) -> _Coro[P, R]:
-        assert iscoroutinefunction(fn)
+    def deco[**P, R](f: Callable[P, R]) -> Callable[P, R]:
+        w = retry(
+            stop=stop_after_attempt(max_attempts),
+            wait=wait_fixed(wait),
+            retry=retry_if_exception_type((HTTPError, *extra_errors)),
+            before_sleep=warn_immediate_errors,
+        )(f)
+        r: BaseRetrying = w.retry  # type: ignore[attr-defined]
 
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        async def async_wrapper(*args: P.args, **kwargs: P.kwargs):
+            assert iscoroutinefunction(f)
             copy = r.copy()
             try:
-                return await copy(fn, *args, **kwargs)
+                return await copy(f, *args, **kwargs)
             except RetryError as e:
                 exc = e.last_attempt.exception()
                 assert exc is not None
                 raise exc from None
 
-        return update_wrapper(wrapper, fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            copy = r.copy()
+            try:
+                return copy(f, *args, **kwargs)
+            except RetryError as e:
+                exc = e.last_attempt.exception()
+                assert exc is not None
+                raise exc from None
+
+        w2 = async_wrapper if iscoroutinefunction(f) else wrapper
+        return cast('Callable[P, R]', update_wrapper(w2, f))
 
     return deco
 

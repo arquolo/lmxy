@@ -2,7 +2,6 @@ __all__ = ['OpenAiLike']
 
 import functools
 from collections.abc import AsyncGenerator, Callable, Generator, Sequence
-from inspect import iscoroutinefunction
 from json.decoder import JSONDecodeError
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -28,8 +27,7 @@ from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from pydantic import Field, PrivateAttr
 from tenacity import (
-    AsyncRetrying,
-    Retrying,
+    retry,
     retry_if_exception_type,
     stop_after_attempt,
     stop_after_delay,
@@ -60,21 +58,21 @@ _errors = (
 
 
 def _llm_retry[**P, R](f: Callable[P, R]) -> Callable[P, R]:
-    tp = AsyncRetrying if iscoroutinefunction(f) else Retrying
-    retry = tp(
+    f2 = retry(
         reraise=True,
         wait=wait_random_exponential(min=1, max=20),
         retry=retry_if_exception_type(_errors),
         before_sleep=warn_immediate_errors,
-    )
+    )(f)
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         max_retries = getattr(args[0], 'max_retries', 0)
         if max_retries <= 0:
             return f(*args, **kwargs)
 
         stop = stop_after_attempt(max_retries) | stop_after_delay(60)
-        return retry.copy(stop=stop)(f, *args, **kwargs)  # type: ignore
+        f3 = f2.retry_with(stop=stop)  # type: ignore[attr-defined]
+        return f3(f, *args, **kwargs)
 
     return functools.update_wrapper(wrapper, f)
 
@@ -165,9 +163,7 @@ class OpenAiLike(FunctionCallingLLM):
 
     @property
     def _tokenize(self) -> Tokenize | None:
-        """
-        Get a tokenizer for this model, or None if a tokenizing method
-        is unknown.
+        """Get a tokenizer for this model, or None if missing.
 
         OpenAI can do this using the tiktoken package, subclasses may not have
         this convenience.
@@ -436,7 +432,7 @@ def _to_openai_message_dict(m: ChatMessage) -> 'ChatCompletionMessageParam':
     # Reference: https://platform.openai.com/docs/api-reference/chat/create
     content = (
         None
-        if txt == ''
+        if not txt
         and m.role.value == 'assistant'
         and (
             'function_call' in m.additional_kwargs
@@ -470,10 +466,9 @@ class _Decoder:
         txt = x.choices[0].text if x.choices else ''
         self.content += txt
 
-        cr = CompletionResponse(
+        return CompletionResponse(
             delta=txt, text=self.content, raw=x.model_dump()
         )
-        return cr
 
     def chat(self, x: 'ChatCompletionChunk | ChatCompletion') -> ChatResponse:
         role: str
@@ -498,8 +493,7 @@ class _Decoder:
         if self.tool_calls:
             msg.additional_kwargs['tool_calls'] = self.tool_calls
 
-        cr = ChatResponse(message=msg, delta=delta, raw=x.model_dump())
-        return cr
+        return ChatResponse(message=msg, delta=delta, raw=x.model_dump())
 
 
 def _update_tool_calls(

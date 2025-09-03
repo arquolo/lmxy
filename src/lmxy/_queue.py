@@ -1,7 +1,7 @@
 __all__ = ['MulticastQueue']
 
 from asyncio import CancelledError, Future
-from collections.abc import AsyncGenerator, Awaitable, Iterable
+from collections.abc import AsyncGenerator, Iterable
 from typing import Literal, Self
 from weakref import finalize
 
@@ -34,7 +34,7 @@ class MulticastQueue[T]:
         self._buf: list[T] = []
         self._pos = 0
         self._putters = set[Future[None]]()
-        self._getters = set[Future[T]]()
+        self._getters = set[Future[None]]()
         self._state: Literal['running', 'done', 'closed'] = 'running'
         self._nsubs = 0
 
@@ -50,24 +50,19 @@ class MulticastQueue[T]:
     def subscribe(self) -> '_QueueIterator[T]':
         return _QueueIterator(self)
 
-    def aget(self, idx: int) -> Awaitable[T]:
+    async def aget(self, idx: int) -> T:
         self._pos = max(self._pos, idx)
 
-        if idx < len(self._buf):  # Read from buffer
-            value = self._buf[idx]
-            f = Future[T]()
-            f.set_result(value)
-            return f
+        if idx >= len(self._buf):
+            if self._state == 'closed':  # Closed before finish
+                raise QueueShutdownError
 
-        if self._state == 'closed':  # Closed before finish
-            raise QueueShutdownError
+            if self._state == 'done':  # Finished
+                raise IndexError
 
-        if self._state == 'done':  # Finished
-            raise IndexError
+            await _step(wakeup=self._putters, wait_for=self._getters)
 
-        # Wait for the new data
-        _release_all(self._putters, None)
-        return _acquire(self._getters)
+        return self._buf[idx]
 
     # ------------------------------- producer -------------------------------
 
@@ -80,16 +75,12 @@ class MulticastQueue[T]:
             assert not self._putters
             _cancel_all(self._getters, msg='Queue is finalized')
 
-    def put(self, value: T) -> Awaitable[None]:
+    async def put(self, value: T) -> None:
         if self._state != 'running':
             raise QueueShutdownError
 
-        # Pass value to all getters
         self._buf.append(value)
-        _release_all(self._getters, value)
-
-        # Wait till all of them succeed
-        return _acquire(self._putters)
+        await _step(wakeup=self._getters, wait_for=self._putters)
 
     # ------------------------------- private --------------------------------
 
@@ -100,7 +91,7 @@ class MulticastQueue[T]:
         self._nsubs -= 1
 
         # No waiters, close
-        if not self._nsubs and self._state == 'running':
+        if self._state == 'running' and not self._nsubs:
             self._state = 'closed'
             assert not self._getters
             _cancel_all(self._putters, msg='No waiters to store values for')
@@ -132,23 +123,25 @@ class _QueueIterator[T]:
             return value
 
 
-async def _acquire[T](waiters: set[Future[T]]) -> T:
-    f = Future[T]()
-    waiters.add(f)
+async def _step(
+    wakeup: Iterable[Future[None]],
+    wait_for: set[Future[None]],
+) -> None:
+    # Release blocked
+    for f in wakeup:
+        if not f.done():
+            f.set_result(None)
+
+    # Acquire to block
+    f = Future[None]()
+    wait_for.add(f)
     try:
-        return await f
+        await f
     finally:
         f.cancel()
-        waiters.discard(f)
-
-
-def _release_all[T](waiters: Iterable[Future[T]], value: T) -> None:
-    for f in waiters:
-        if not f.done():
-            f.set_result(value)
+        wait_for.discard(f)
 
 
 def _cancel_all(waiters: Iterable[Future], msg: str | None = None) -> None:
     for f in waiters:
-        f.cancel(msg)
         f.cancel(msg)

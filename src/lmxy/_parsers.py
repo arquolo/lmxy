@@ -20,8 +20,7 @@ _NEXT_STATE = [  # answering -> (not answering, next tag, next tag part)
 
 
 def no_think[S: AsyncIterator[str] | str](s: S) -> S:
-    """Remove <think>...</think> blocks and dedent output"""
-
+    """Remove <think>...</think> blocks and dedent output."""
     if isinstance(s, str):
         txt = _THOUGHT.sub('', s)
         txt = _DIRTY_END.sub('\n', txt)
@@ -32,7 +31,7 @@ def no_think[S: AsyncIterator[str] | str](s: S) -> S:
 
 
 async def _ahide_think(s: AsyncIterator[str]) -> AsyncIterator[str]:
-    """Removes `<think>...</think>` blocks"""
+    """Remove `<think>...</think>` blocks."""
     buf = ''
     answering, tag, partial_tag = _NEXT_STATE[False]
     async for token in s:
@@ -56,8 +55,8 @@ async def _ahide_think(s: AsyncIterator[str]) -> AsyncIterator[str]:
 
 
 async def _astrip(s: AsyncIterator[str]) -> AsyncIterator[str]:
-    """
-    Strip chunked line.
+    """Strip chunked line.
+
     - Skips leading and trailing whitespaces and line breaks
     - Trims trailing whitespaces from all lines
     - Keeps at most 2 consecutive empty lines

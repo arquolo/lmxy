@@ -46,7 +46,8 @@ async def unpack_response[**P](
             obj = ret.async_response_gen()
 
         case _:
-            raise NotImplementedError(f'Unsupported type: {type(ret)}')
+            msg = f'Unsupported type: {type(ret)}'
+            raise NotImplementedError(msg)
 
     if obj is None:
         obj = ''

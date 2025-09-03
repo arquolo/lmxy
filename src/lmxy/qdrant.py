@@ -1,8 +1,4 @@
-"""
-Qdrant vector store index.
-
-An index that is built on top of an existing Qdrant collection.
-"""
+"""Qdrant vector store, built on top of an existing Qdrant collection."""
 
 __all__ = [
     'HybridFuse',
@@ -20,7 +16,7 @@ from collections.abc import (
     Sequence,
 )
 from itertools import batched
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import orjson
 from grpc import RpcError
@@ -118,11 +114,13 @@ def _relative_score_fusion(
 
 
 class QdrantVectorStore(BaseModel):
-    """
-    LlamaIndex's Qdrant Vector Store.
-    - only async
-    - removed legacy formats
-    - removed legacy sparse embeddings
+    """Fork of LlamaIndex's Qdrant Vector Store.
+
+    Differences:
+    - async only
+    - no legacy formats
+    - no legacy sparse embeddings
+    - Qdrant Query API
 
     In this vector store, embeddings and docs are stored within a
     Qdrant collection.
@@ -257,7 +255,8 @@ class QdrantVectorStore(BaseModel):
         elif isinstance(dense, dict) and _DENSE_NAME in dense:
             self._is_legacy = False
         else:
-            raise TypeError(f'Bad vector config {dense}')
+            msg = f'Bad vector config {dense}'
+            raise TypeError(msg)
 
         sparse = info.config.params.sparse_vectors
         if isinstance(sparse, dict) and _SPARSE_NAME in sparse:
@@ -298,7 +297,9 @@ class QdrantVectorStore(BaseModel):
     # CRUD: create or update
     async def async_add(self, nodes: Sequence[BaseNode]) -> list[str]:
         """Add nodes with embeddings to Qdrant index.
-        Returns node IDs that were added to the index."""
+
+        Returns node IDs that were added to the index.
+        """
         if nodes:
             await self.initialize(vector_size=len(nodes[0].get_embedding()))
 
@@ -325,7 +326,7 @@ class QdrantVectorStore(BaseModel):
         else:
             sparse_embeddings = [None for _ in nodes]
 
-        for node, semb in zip(nodes, sparse_embeddings):
+        for node, semb in zip(nodes, sparse_embeddings, strict=True):
             demb = node.get_embedding()
             vector: rest.VectorStruct = (
                 demb  # type: ignore[assignment]
@@ -496,7 +497,7 @@ async def _aembed_sparse(
     ichunk, vchunk = await asyncio.to_thread(fn, queries)
     return [
         rest.SparseVector(indices=ids, values=vs)
-        for ids, vs in zip(ichunk, vchunk)
+        for ids, vs in zip(ichunk, vchunk, strict=True)
     ]
 
 
@@ -560,7 +561,7 @@ def _build_subfilter(mfs: MetadataFilters | None) -> rest.Filter | None:
 
 def _meta_to_condition(f: MetadataFilter) -> rest.Condition | None:
     op = f.operator
-    if op.name in ('LT', 'GT', 'LTE', 'GTE'):
+    if op.name in {'LT', 'GT', 'LTE', 'GTE'}:
         return rest.FieldCondition(
             key=f.key,
             range=rest.Range(**{op.name.lower(): f.value}),  # type: ignore
@@ -572,13 +573,19 @@ def _meta_to_condition(f: MetadataFilter) -> rest.Condition | None:
         return rest.IsEmptyCondition(is_empty=rest.PayloadField(key=f.key))
 
     if f.value is None:
-        raise ValueError(f'Invalid filter {f}')
-    values = f.value if isinstance(f.value, list) else [f.value]
+        msg = f'Invalid filter {f}'
+        raise ValueError(msg)
+
+    values = cast(
+        'list[int] | list[str]',
+        f.value if isinstance(f.value, list) else [f.value],
+    )
 
     m: rest.Match | None = None
     match op.value:
         case 'text_match' | 'text_match_insensitive':
-            m = rest.MatchText(text=f.value)  # type: ignore
+            assert isinstance(f.value, str)
+            m = rest.MatchText(text=f.value)
 
         case '==':
             if isinstance(f.value, float):
@@ -590,12 +597,12 @@ def _meta_to_condition(f: MetadataFilter) -> rest.Condition | None:
         # Any of
         # https://qdrant.tech/documentation/concepts/filtering/#match-any
         case 'in':
-            m = rest.MatchAny(any=values)  # type: ignore
+            m = rest.MatchAny(any=values)
 
         # None of
         # https://qdrant.tech/documentation/concepts/filtering/#match-except
         case '!=' | 'nin':
-            m = rest.MatchExcept(**{'except': values})  # type: ignore
+            m = rest.MatchExcept(**{'except': values})
 
     if m:
         return rest.FieldCondition(key=f.key, match=m)
@@ -674,18 +681,19 @@ def node_to_metadata_dict(node: BaseNode) -> dict:
 
 
 def metadata_dict_to_node(metadata: dict) -> BaseNode:
-    """Common logic for loading Node data from metadata dict."""
+    """Load generic Node from metadata dict."""
     # See: llama_index.core.vector_stores.utils:metadata_dict_to_node
     # ! This one is altered to be compatible with above.
     node_json = metadata.pop('_node_content', None)
     node_type = metadata.pop('_node_type', None)
     if node_json is None:
-        raise ValueError('Node content not found in metadata dict.')
+        msg = 'Node content not found in metadata dict.'
+        raise ValueError(msg)
 
     metadata = {
         k: v
         for k, v in metadata.items()
-        if k not in ('document_id', 'doc_id', 'ref_doc_id')
+        if k not in {'document_id', 'doc_id', 'ref_doc_id'}
     }
     data = orjson.loads(node_json)
     data.setdefault('metadata', metadata)

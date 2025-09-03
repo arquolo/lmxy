@@ -34,9 +34,10 @@ else:
             mod = import_module(mod, __package__)
             globals()[name] = obj = getattr(mod, name)
             return obj
-        raise AttributeError(f'No attribute {name}')
+        msg = f'No attribute {name}'
+        raise AttributeError(msg)
 
-    def __dir__():
+    def __dir__() -> list[str]:
         return __all__
 
 

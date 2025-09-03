@@ -36,6 +36,5 @@ def get_sparse_encoder(
     return encode
 
 
-_HF_HUB_OFFLINE = is_true(
-    os.environ.get('HF_HUB_OFFLINE') or os.environ.get('TRANSFORMERS_OFFLINE')
-)
+_HF_HUB_OFFLINE = is_true(os.environ.get('HF_HUB_OFFLINE'))
+_HF_HUB_OFFLINE |= is_true(os.environ.get('TRANSFORMERS_OFFLINE'))
