@@ -72,7 +72,7 @@ def _llm_retry[**P, R](f: Callable[P, R]) -> Callable[P, R]:
 
         stop = stop_after_attempt(max_retries) | stop_after_delay(60)
         f3 = f2.retry_with(stop=stop)  # type: ignore[attr-defined]
-        return f3(f, *args, **kwargs)
+        return f3(*args, **kwargs)
 
     return functools.update_wrapper(wrapper, f)
 
