@@ -56,7 +56,6 @@ responses = [
 qdrant = [
     "grpcio",  # transitive
     "lmxy[fastembed,responses]",
-    "httpx",  # transitive
     "orjson",
     "qdrant-client~=1.15.1",
 ]
@@ -75,6 +74,7 @@ dev-core = [
     "pytest~=8.0",
     "pytest-asyncio",
     "ruff~=0.12.2",
+    "types-requests",
 ]
 dev = [
     "lmxy[dev-core]",
