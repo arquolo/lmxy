@@ -14,7 +14,7 @@ from ._types import Tokenize
 
 @memoize(5, policy='lru')
 def get_tokenizer(model_name: str) -> Tokenize:
-    """Load tokenizer without caching.
+    """Load tokenizer.
 
     See: llama_index.core.utils.get_tokenizer
     """

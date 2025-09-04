@@ -156,21 +156,12 @@ class OpenAiLike(FunctionCallingLLM):
             default_headers=self.default_headers,
             http_client=self.async_http_client,
         )
+        if isinstance(self.tokenize, str):
+            self.tokenize = get_tokenizer(self.tokenize)
 
     @classmethod
     def class_name(cls) -> str:
         return 'OpenAILike'
-
-    @property
-    def _tokenize(self) -> Tokenize | None:
-        """Get a tokenizer for this model, or None if missing.
-
-        OpenAI can do this using the tiktoken package, subclasses may not have
-        this convenience.
-        """
-        if isinstance(self.tokenize, str):
-            return get_tokenizer(self.tokenize)
-        return self.tokenize
 
     @property
     def metadata(self) -> LLMMetadata:
@@ -287,8 +278,12 @@ class OpenAiLike(FunctionCallingLLM):
         # NOTE: non-chat completion endpoint requires max_tokens to be set
         if self.max_new_tokens is not None:
             all_kwargs['max_tokens'] = self.max_new_tokens
-        elif prompt and self._tokenize is not None:
-            num_tokens = len(self._tokenize(prompt))
+        elif (
+            prompt
+            and self.tokenize is not None
+            and not isinstance(self.tokenize, str)
+        ):
+            num_tokens = len(self.tokenize(prompt))
             if num_tokens >= num_ctx:
                 msg = (
                     f'The prompt has {num_tokens} tokens, which is too long'

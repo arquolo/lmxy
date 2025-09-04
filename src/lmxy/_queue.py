@@ -1,7 +1,7 @@
 __all__ = ['MulticastQueue']
 
 from asyncio import CancelledError, Future
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator
 from typing import Literal, Self
 from weakref import finalize
 
@@ -20,7 +20,7 @@ class MulticastQueue[T]:
 
         mq = MulticastQueue()
         async def worker():
-            with mq:
+            with mq:  # or just mq.close() after last mq.put
                 for x in range(3):
                     mq.put(x)
 
@@ -32,15 +32,15 @@ class MulticastQueue[T]:
 
     def __init__(self) -> None:
         self._buf: list[T] = []
-        self._pos = 0
         self._putters = set[Future[None]]()
         self._getters = set[Future[None]]()
-        self._state: Literal['running', 'done', 'closed'] = 'running'
+        self._state: Literal['running', 'closed', 'terminated'] = 'running'
         self._nsubs = 0
 
     # ------------------------------- consumer -------------------------------
 
     async def __aiter__(self) -> AsyncGenerator[T]:
+        """Subscribe to queue and iterate over its items."""
         # finally doesn't work unless `aclose` is manually called,
         # or anything is `await`ed (even via `asyncio.sleep(0.001)`)
         with _QueueIterator(self) as it:
@@ -48,16 +48,15 @@ class MulticastQueue[T]:
                 yield x
 
     def subscribe(self) -> '_QueueIterator[T]':
+        """Subscribe to queue to get items from its beginning."""
         return _QueueIterator(self)
 
     async def aget(self, idx: int) -> T:
-        self._pos = max(self._pos, idx)
-
         if idx >= len(self._buf):
-            if self._state == 'closed':  # Closed before finish
+            if self._state == 'terminated':  # Closed before finish
                 raise QueueShutdownError
 
-            if self._state == 'done':  # Finished
+            if self._state == 'closed':  # Finished
                 raise IndexError
 
             await _step(wakeup=self._putters, wait_for=self._getters)
@@ -70,12 +69,17 @@ class MulticastQueue[T]:
         pass
 
     def __exit__(self, *_) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Close queue to mark a successful end of production."""
         if self._state == 'running':
-            self._state = 'done'
+            self._state = 'closed'
             assert not self._putters
             _cancel_all(self._getters, msg='Queue is finalized')
 
     async def put(self, value: T) -> None:
+        """Put new value to queue."""
         if self._state != 'running':
             raise QueueShutdownError
 
@@ -90,9 +94,9 @@ class MulticastQueue[T]:
     def decref(self) -> None:
         self._nsubs -= 1
 
-        # No waiters, close
+        # No waiters, terminate
         if self._state == 'running' and not self._nsubs:
-            self._state = 'closed'
+            self._state = 'terminated'
             assert not self._getters
             _cancel_all(self._putters, msg='No waiters to store values for')
 
@@ -124,7 +128,7 @@ class _QueueIterator[T]:
 
 
 async def _step(
-    wakeup: Iterable[Future[None]],
+    wakeup: set[Future[None]],
     wait_for: set[Future[None]],
 ) -> None:
     # Release blocked
@@ -142,6 +146,6 @@ async def _step(
         wait_for.discard(f)
 
 
-def _cancel_all(waiters: Iterable[Future], msg: str | None = None) -> None:
+def _cancel_all(waiters: set[Future], msg: str | None = None) -> None:
     for f in waiters:
         f.cancel(msg)
