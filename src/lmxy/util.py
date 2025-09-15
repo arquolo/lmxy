@@ -1,6 +1,7 @@
 __all__ = [
     'aretry',
-    'is_true',
+    'get_clients',
+    'raise_for_status',
     'warn_immediate_errors',
 ]
 
@@ -14,6 +15,16 @@ from inspect import iscoroutinefunction
 from types import CodeType
 from typing import Protocol, cast
 
+from httpx import (
+    AsyncByteStream,
+    AsyncClient,
+    AsyncHTTPTransport,
+    Client,
+    HTTPStatusError,
+    HTTPTransport,
+    Limits,
+    Response,
+)
 from tenacity import (
     RetryCallState,
     retry,
@@ -21,6 +32,10 @@ from tenacity import (
     stop_after_attempt,
     wait_fixed,
 )
+
+from ._env import env
+
+# --------------------------------- retrying ---------------------------------
 
 _retriable_errors: tuple[type[BaseException], ...] = (
     asyncio.TimeoutError,
@@ -44,13 +59,6 @@ with suppress(ImportError):
 
 
 logger = logging.getLogger(__name__)
-_ENV_VARS_TRUE_VALUES = frozenset({'1', 'ON', 'YES', 'TRUE'})
-
-
-def is_true(value: str | None) -> bool:
-    if value is None:
-        return False
-    return value.upper() in _ENV_VARS_TRUE_VALUES
 
 
 class _Decorator(Protocol):
@@ -115,10 +123,13 @@ def aretry(
 
 def _declutter_tb(e: BaseException, code: CodeType) -> None:
     tb = e.__traceback__
-    # Drop outer to `code` frames
-    while tb and tb.tb_frame.f_code is not code:
+
+    # Drop frames until `code` frame is reached
+    while tb:
+        if tb.tb_frame.f_code is code:
+            e.__traceback__ = tb
+            return
         tb = tb.tb_next
-    e.__traceback__ = tb
 
 
 def warn_immediate_errors(s: RetryCallState) -> None:
@@ -139,9 +150,82 @@ def warn_immediate_errors(s: RetryCallState) -> None:
         qualname = (f'{mod}.{name}' if mod else name) if name else repr(fn)
 
     logger.warning(
-        'Retrying %s in %.2g seconds as it raised %s: %s.',
+        'Retrying %s #%d in %.2g seconds as it raised %s: %s.',
         qualname,
+        s.attempt_number,
         s.next_action.sleep,
         ex.__class__.__name__,
         ex,
     )
+
+
+_limits = Limits(max_connections=None, max_keepalive_connections=20)
+
+# Use SSL_CERT_FILE envvar to pass `cafile`
+_transport = HTTPTransport(
+    verify=env.SSL_VERIFY, limits=_limits, retries=env.RETRIES
+)
+_atransport = AsyncHTTPTransport(
+    verify=env.SSL_VERIFY, limits=_limits, retries=env.RETRIES
+)
+
+
+def get_clients(
+    base_url: str = '', timeout: float | None = None
+) -> tuple[Client, AsyncClient]:
+    sc = Client(
+        timeout=timeout,
+        follow_redirects=True,
+        base_url=base_url,
+        transport=_transport,
+    )
+    ac = AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        base_url=base_url,
+        transport=_atransport,
+    )
+    return sc, ac
+
+
+def raise_for_status(resp: Response) -> asyncio.Future[Response]:
+    if resp.is_success:
+        f = asyncio.Future[Response]()
+        f.set_result(resp)
+
+    # opened asynchronous response
+    elif isinstance(resp.stream, AsyncByteStream) and not resp.is_closed:
+
+        async def _fail() -> Response:
+            data = await resp.aread()
+            exc = _failed_response(resp, data)
+            raise exc from None
+
+        f = asyncio.ensure_future(_fail())
+
+    # closed asynchronous response or any synchronous response
+    else:
+        exc = _failed_response(resp, resp.read())
+
+        f = asyncio.Future[Response]()
+        f.set_exception(exc)
+
+    return f
+
+
+def _failed_response(resp: Response, content: bytes) -> HTTPStatusError:
+    status_class = resp.status_code // 100
+    error_type = _ERROR_TYPES.get(status_class, 'Invalid status code')
+    message = (
+        f"{error_type} '{resp.status_code} {resp.reason_phrase}' "
+        f"for url '{resp.url}' failed with {content.decode()}"
+    )
+    return HTTPStatusError(message, request=resp.request, response=resp)
+
+
+_ERROR_TYPES = {
+    1: 'Informational response',
+    3: 'Redirect response',
+    4: 'Client error',
+    5: 'Server error',
+}

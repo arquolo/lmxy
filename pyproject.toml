@@ -28,7 +28,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "httpx",
     "pydantic~=2.10",
+    "pydantic-settings",
     "tenacity",
 ]
 
@@ -36,26 +38,26 @@ dependencies = [
 homepage = "https://github.com/arquolo/lmx"
 
 [project.optional-dependencies]
+base = [  # responses, rerank, embed
+    "llama-index-core~=0.13.0",
+    "llama-index-utils-huggingface",
+]
 tokenizer = [
     "glow~=0.15.0",
     "tiktoken",
     "transformers",
 ]
-openailike = [
-    "lmxy[tokenizer]",
-    "httpx",
-    "openai~=1.102",
-]
 fastembed = [
     "fastembed~=0.7.0",
     "glow~=0.15.0",
 ]
-responses = [
-    "llama-index-core~=0.13.0",
+openailike = [
+    "lmxy[base,tokenizer]",
+    "openai~=1.102",
 ]
 qdrant = [
+    "lmxy[base,fastembed]",
     "grpcio",  # transitive
-    "lmxy[fastembed,responses]",
     "orjson",
     "qdrant-client~=1.15.1",
 ]

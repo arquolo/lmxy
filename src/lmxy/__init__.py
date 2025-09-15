@@ -13,16 +13,20 @@ from ._types import (
 
 if TYPE_CHECKING:
     from ._responses import unpack_response
+    from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
     from .qdrant import QdrantVectorStore
+    from .rerank import Reranker
     from .tokenizer import get_tokenizer
 else:
     _exports = {
         '._responses': ['unpack_response'],
+        '.embed': ['Embedder'],
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
         '.qdrant': ['QdrantVectorStore'],
+        '.rerank': ['Reranker'],
         '.tokenizer': ['get_tokenizer'],
     }
     _submodule_by_name = {
@@ -42,11 +46,13 @@ else:
 
 
 __all__ = [
+    'Embedder',
     'LlmFunction',
     'LlmResponse',
     'MulticastQueue',
     'OpenAiLike',
     'QdrantVectorStore',
+    'Reranker',
     'SparseEncode',
     'Tokenize',
     'VectorStore',

@@ -1,20 +1,19 @@
 __all__ = ['get_sparse_encoder']
 
-import os
 from collections.abc import Iterable
 
 from fastembed import SparseTextEmbedding
 from glow import memoize
 
+from ._env import env
 from ._types import BatchSparseEncoding, SparseEncode
-from .util import is_true
 
 
 @memoize()
 def get_sparse_encoder(
     model_name: str, batch_size: int = 256, **kwargs
 ) -> SparseEncode:
-    if _HF_HUB_OFFLINE:
+    if env.HF_HUB_OFFLINE or env.TRANSFORMERS_OFFLINE:
         kwargs['local_files_only'] = True
 
     # prioritize GPU over CPU
@@ -34,7 +33,3 @@ def get_sparse_encoder(
         return list(indices), list(values)
 
     return encode
-
-
-_HF_HUB_OFFLINE = is_true(os.environ.get('HF_HUB_OFFLINE'))
-_HF_HUB_OFFLINE |= is_true(os.environ.get('TRANSFORMERS_OFFLINE'))

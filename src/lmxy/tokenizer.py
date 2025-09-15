@@ -2,14 +2,18 @@ __all__ = ['get_tokenizer']
 
 import os
 from functools import partial
-from typing import cast
+from typing import Protocol, cast, runtime_checkable
 
 import tiktoken
 from glow import memoize
-from llama_index.core.utils import Tokenizer
 from transformers import AutoTokenizer
 
 from ._types import Tokenize
+
+
+@runtime_checkable
+class Tokenizer(Protocol):
+    def encode(self, text: str, *args, **kwargs) -> list: ...
 
 
 @memoize(5, policy='lru')
