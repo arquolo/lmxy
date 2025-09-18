@@ -7,18 +7,11 @@ __all__ = [
 
 import asyncio
 import logging
-from collections.abc import (
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Collection,
-    Iterable,
-    Sequence,
-)
-from itertools import batched
+from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
 from typing import Any, Protocol, cast, runtime_checkable
 
 import orjson
+from glow import astreaming
 from grpc import RpcError
 from llama_index.core.schema import (
     BaseNode,
@@ -133,7 +126,10 @@ class QdrantVectorStore(BaseModel):
 
     collection_name: str
     aclient: AsyncQdrantClient
-    batch_size: int = 64
+    upsert_timeout: float | None = None  # enable to batch upserts
+    upsert_batch_size: int | None = 64
+    query_timeout: float | None = None  # enable to batch upserts
+    query_batch_size: int | None = 64
     max_retries: int = 3
 
     # Collection construction parameters
@@ -154,9 +150,15 @@ class QdrantVectorStore(BaseModel):
     # Hybrid search fusion
     hybrid_fusion_fn: HybridFuse = _relative_score_fusion
 
-    _upsert: Callable[[str, Sequence[rest.PointStruct]], Awaitable] = (
-        PrivateAttr()
-    )
+    _upsert: Callable[
+        [Sequence[BaseNode]],
+        Awaitable[Sequence[str]],
+    ] = PrivateAttr()
+    _query: Callable[
+        [Sequence[rest.QueryRequest]],
+        Awaitable[Sequence[VectorStoreQueryResult]],
+    ] = PrivateAttr()
+
     _is_initialized: bool = PrivateAttr()
     _is_legacy: bool = PrivateAttr()
 
@@ -166,7 +168,24 @@ class QdrantVectorStore(BaseModel):
             UnexpectedResponse,
             max_attempts=self.max_retries,
         )
-        self._upsert = retry_(self.aclient.upsert)
+        upsert = self._ll_upsert
+        if self.upsert_timeout is not None:
+            upsert = astreaming(
+                upsert,
+                batch_size=self.upsert_batch_size,
+                timeout=self.upsert_timeout,
+            )
+        self._upsert = retry_(upsert)
+
+        query = self._ll_query
+        if self.query_timeout is not None:
+            query = astreaming(
+                query,
+                batch_size=self.query_batch_size,
+                timeout=self.query_timeout,
+            )
+        self._query = retry_(query)
+
         self._is_initialized = False
         self._is_legacy = False
 
@@ -295,7 +314,7 @@ class QdrantVectorStore(BaseModel):
             )
 
     # CRUD: create or update
-    async def async_add(self, nodes: Sequence[BaseNode]) -> list[str]:
+    async def async_add(self, nodes: Sequence[BaseNode]) -> Sequence[str]:
         """Add nodes with embeddings to Qdrant index.
 
         Returns node IDs that were added to the index.
@@ -303,20 +322,13 @@ class QdrantVectorStore(BaseModel):
         if nodes:
             await self.initialize(vector_size=len(nodes[0].get_embedding()))
 
-        ids: list[str] = []
-
-        for node_batch in batched(nodes, self.batch_size):
-            points = [p async for p in self._build_points(*node_batch)]
-
-            await self._upsert(self.collection_name, points)
-
-            ids += [node.id_ for node in node_batch]
-
-        return ids
+        return await self._upsert(nodes)
 
     async def _build_points(
-        self, *nodes: BaseNode
-    ) -> AsyncIterator[rest.PointStruct]:
+        self, nodes: Sequence[BaseNode]
+    ) -> list[rest.PointStruct]:
+        if not nodes:
+            return []
         sparse_embeddings: Sequence[rest.SparseVector | None]
         if self.sparse_doc_fn:
             sparse_embeddings = await _aembed_sparse(
@@ -326,6 +338,7 @@ class QdrantVectorStore(BaseModel):
         else:
             sparse_embeddings = [None for _ in nodes]
 
+        points: list[rest.PointStruct] = []
         for node, semb in zip(nodes, sparse_embeddings, strict=True):
             demb = node.get_embedding()
             vector: rest.VectorStruct = (
@@ -338,7 +351,9 @@ class QdrantVectorStore(BaseModel):
             )
             payload = node_to_metadata_dict(node)
 
-            yield rest.PointStruct(id=node.id_, vector=vector, payload=payload)
+            pt = rest.PointStruct(id=node.id_, vector=vector, payload=payload)
+            points.append(pt)
+        return points
 
     # CRUD: read
     async def aquery(
@@ -419,9 +434,7 @@ class QdrantVectorStore(BaseModel):
         if not reqs:
             return VectorStoreQueryResult([], [], [])
 
-        qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
-        results = [_parse_to_query_result(r.points) for r in qrs]
-
+        results = await self._query(reqs)
         if len(results) != 2:  # (dense) or (sparse)
             return results[0]
 
@@ -489,6 +502,19 @@ class QdrantVectorStore(BaseModel):
         async with _LOCK:
             await self.aclient.delete_collection(self.collection_name)
             self._is_initialized = False
+
+    # low levels
+
+    async def _ll_upsert(self, nodes: Sequence[BaseNode], /) -> Sequence[str]:
+        points = await self._build_points(nodes)
+        await self.aclient.upsert(self.collection_name, points)
+        return [node.id_ for node in nodes]
+
+    async def _ll_query(
+        self, reqs: Sequence[rest.QueryRequest], /
+    ) -> Sequence[VectorStoreQueryResult]:
+        qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
+        return [_parse_to_query_result(r.points) for r in qrs]
 
 
 async def _aembed_sparse(

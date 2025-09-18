@@ -57,6 +57,7 @@ openailike = [
 ]
 qdrant = [
     "lmxy[base,fastembed]",
+    "glow~=0.15.3",
     "grpcio",  # transitive
     "orjson",
     "qdrant-client~=1.15.1",
