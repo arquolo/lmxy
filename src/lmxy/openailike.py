@@ -26,17 +26,10 @@ from openai import AsyncOpenAI, AsyncStream, OpenAI, Stream
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from pydantic import Field, PrivateAttr
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    stop_after_delay,
-    wait_random_exponential,
-)
 
 from ._types import Tokenize
 from .tokenizer import get_tokenizer
-from .util import warn_immediate_errors
+from .util import aretry
 
 if TYPE_CHECKING:
     from llama_index.core.tools.types import BaseTool
@@ -58,21 +51,18 @@ _errors = (
 
 
 def _llm_retry[**P, R](f: Callable[P, R]) -> Callable[P, R]:
-    f2 = retry(
-        reraise=True,
-        wait=wait_random_exponential(min=1, max=20),
-        retry=retry_if_exception_type(_errors),
-        before_sleep=warn_immediate_errors,
-    )(f)
-
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         max_retries = getattr(args[0], 'max_retries', 0)
         if max_retries <= 0:
             return f(*args, **kwargs)
 
-        stop = stop_after_attempt(max_retries) | stop_after_delay(60)
-        f3 = f2.retry_with(stop=stop)  # type: ignore[attr-defined]
-        return f3(*args, **kwargs)
+        r = aretry(
+            *_errors,
+            max_attempts=max_retries,
+            timeout=60,
+            wait_max=20,
+        )
+        return r(f)(*args, **kwargs)
 
     return functools.update_wrapper(wrapper, f)
 
@@ -194,7 +184,7 @@ class OpenAiLike(FunctionCallingLLM):
         return _Decoder().completion(resp)
 
     @llm_completion_callback()
-    @_llm_retry
+    @_llm_retry  # NOTE: Stream breaks are on caller's side
     def stream_complete(
         self, prompt: str, formatted: bool = False, **kwargs
     ) -> Generator[CompletionResponse]:
@@ -204,7 +194,7 @@ class OpenAiLike(FunctionCallingLLM):
         return _map_ctx(s, _Decoder().completion)
 
     @llm_completion_callback()
-    @_llm_retry
+    @_llm_retry  # NOTE: Stream breaks are on caller's side
     async def astream_complete(
         self, prompt: str, formatted: bool = False, **kwargs
     ) -> AsyncGenerator[CompletionResponse]:
@@ -232,7 +222,7 @@ class OpenAiLike(FunctionCallingLLM):
         return _Decoder().chat(resp)
 
     @llm_chat_callback()
-    @_llm_retry
+    @_llm_retry  # NOTE: Stream breaks are on caller's side
     def stream_chat(
         self, messages: Sequence[ChatMessage], **kwargs
     ) -> Generator[ChatResponse]:
@@ -241,7 +231,7 @@ class OpenAiLike(FunctionCallingLLM):
         return _map_ctx(s, _Decoder().chat)
 
     @llm_chat_callback()
-    @_llm_retry
+    @_llm_retry  # NOTE: Stream breaks are on caller's side
     async def astream_chat(
         self, messages: Sequence[ChatMessage], **kwargs
     ) -> AsyncGenerator[ChatResponse]:

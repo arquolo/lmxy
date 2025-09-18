@@ -7,14 +7,17 @@ __all__ = [
 
 import asyncio
 import logging
+import random
 import urllib.error
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
 from types import CodeType
-from typing import Protocol, cast
+from typing import cast
 
+import tenacity as t
 from httpx import (
     AsyncByteStream,
     AsyncClient,
@@ -24,13 +27,6 @@ from httpx import (
     HTTPTransport,
     Limits,
     Response,
-)
-from tenacity import (
-    RetryCallState,
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_fixed,
 )
 
 from ._env import env
@@ -61,16 +57,7 @@ with suppress(ImportError):
 logger = logging.getLogger(__name__)
 
 
-class _Decorator(Protocol):
-    def __call__[**P, R](self, f: Callable[P, R], /) -> Callable[P, R]: ...
-
-
-def aretry(
-    *extra_errors: type[BaseException],
-    max_attempts: int = 10,
-    wait: float = 1,
-    override_defaults: bool = False,
-) -> _Decorator:
+class aretry:  # noqa: N801
     """Wrap sync or async function with a new `Retrying` object.
 
     By default retries only if:
@@ -82,24 +69,47 @@ def aretry(
 
     To add more add more.
     To disable default errors set `override_defaults`.
-    """
-    # Protect to not accidentally call aretry(fn)
-    assert all(
-        isinstance(tp, type) and issubclass(tp, BaseException)
-        for tp in extra_errors
-    )
-    retry_ = retry(
-        stop=stop_after_attempt(max_attempts),
-        wait=wait_fixed(wait),
-        retry=retry_if_exception_type(
-            (() if override_defaults else _retriable_errors) + extra_errors
-        ),
-        before_sleep=warn_immediate_errors,
-        reraise=True,
-    )
 
-    def deco[**P, R](f: Callable[P, R]) -> Callable[P, R]:
-        wrapped_f = retry_(f)
+    Defaults timeouts are from `stamina.retry`
+    """
+
+    def __init__(
+        self,
+        *extra_errors: type[BaseException],
+        max_attempts: int | None = 10,
+        timeout: float | timedelta | None = 45.0,
+        wait_initial: float | timedelta = 0.1,
+        wait_max: float | timedelta = 5.0,
+        wait_jitter: float | timedelta = 1.0,
+        wait_exp_base: float = 2.0,
+        override_defaults: bool = False,
+    ) -> None:
+        # Protect to not accidentally call aretry(fn)
+        assert all(
+            isinstance(tp, type) and issubclass(tp, BaseException)
+            for tp in extra_errors
+        )
+
+        stop = _make_stop(max_attempts, timeout)
+        wait = _jittered_backoff_wait(
+            initial=wait_initial,
+            max_backoff=wait_max,
+            jitter=wait_jitter,
+            exp_base=wait_exp_base,
+        )
+
+        self.wrap = t.retry(
+            stop=stop,
+            wait=wait,
+            retry=t.retry_if_exception_type(
+                (() if override_defaults else _retriable_errors) + extra_errors
+            ),
+            before_sleep=warn_immediate_errors,
+            reraise=True,
+        )
+
+    def __call__[**P, R](self, f: Callable[P, R], /) -> Callable[P, R]:
+        wrapped_f = self.wrap(f)
 
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs):
             try:
@@ -115,10 +125,9 @@ def aretry(
                 _declutter_tb(exc, f.__code__)
                 raise
 
-        w2 = async_wrapper if iscoroutinefunction(f) else wrapper
-        return cast('Callable[P, R]', update_wrapper(w2, f))
-
-    return deco
+        if iscoroutinefunction(f):
+            return update_wrapper(cast('Callable[P, R]', async_wrapper), f)
+        return update_wrapper(wrapper, f)
 
 
 def _declutter_tb(e: BaseException, code: CodeType) -> None:
@@ -132,31 +141,74 @@ def _declutter_tb(e: BaseException, code: CodeType) -> None:
         tb = tb.tb_next
 
 
-def warn_immediate_errors(s: RetryCallState) -> None:
+def warn_immediate_errors(rcs: t.RetryCallState) -> None:
     if (
-        not s.outcome
-        or not s.next_action
-        or not s.outcome.failed
-        or (ex := s.outcome.exception()) is None
+        rcs.next_action
+        and rcs.outcome
+        and (ex := rcs.outcome.exception()) is not None
     ):
-        return
+        logger.warning(
+            'Retrying %s #%d in %.2g seconds as it raised %s: %s.',
+            guess_name(rcs.fn),
+            rcs.attempt_number,
+            rcs.next_action.sleep,
+            ex.__class__.__name__,
+            ex,
+        )
 
-    fn = s.fn
-    if fn is None:
-        qualname = '<unknown>'
-    else:
-        name = getattr(fn, '__qualname__', getattr(fn, '__name__', None))
-        mod = getattr(fn, '__module__', None)
-        qualname = (f'{mod}.{name}' if mod else name) if name else repr(fn)
 
-    logger.warning(
-        'Retrying %s #%d in %.2g seconds as it raised %s: %s.',
-        qualname,
-        s.attempt_number,
-        s.next_action.sleep,
-        ex.__class__.__name__,
-        ex,
-    )
+def _make_stop(
+    attempts: int | None, timeout: float | timedelta | None
+) -> Callable[[t.RetryCallState], bool]:
+    # See stamina._core:_make_stop
+    if attempts and timeout:
+        return t.stop_any(
+            t.stop_after_attempt(attempts),
+            t.stop_after_delay(timeout),
+        )
+
+    if attempts:
+        return t.stop_after_attempt(attempts)
+
+    if timeout:
+        return t.stop_after_delay(timeout)
+
+    return t.stop_never
+
+
+def _jittered_backoff_wait(
+    initial: float | timedelta = 0.1,
+    max_backoff: float | timedelta = 5.0,
+    jitter: float | timedelta = 1.0,
+    exp_base: float = 2.0,
+) -> Callable[[t.RetryCallState], float]:
+    # See stamina._core:_compute_backoff
+    initial = _to_seconds(initial)
+    max_backoff = _to_seconds(max_backoff)
+    jitter = _to_seconds(jitter)
+    rng = random.Random()
+
+    def wait(rcs: t.RetryCallState) -> float:
+        num = rcs.attempt_number - 1
+        jitter_ = rng.uniform(0, jitter) if jitter else 0
+        return min(
+            max_backoff,
+            initial * (exp_base**num) + jitter_,
+        )
+
+    return wait
+
+
+def _to_seconds(x: float | timedelta) -> float:
+    return x.total_seconds() if isinstance(x, timedelta) else x
+
+
+def guess_name(obj: object) -> str:
+    if obj is None:
+        return '<unknown>'
+    name = getattr(obj, '__qualname__', getattr(obj, '__name__', None))
+    mod = getattr(obj, '__module__', None)
+    return (f'{mod}.{name}' if mod else name) if name else repr(obj)
 
 
 _limits = Limits(max_connections=None, max_keepalive_connections=20)
