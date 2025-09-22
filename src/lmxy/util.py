@@ -15,7 +15,7 @@ from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
 from types import CodeType
-from typing import cast
+from typing import Any, cast
 
 import tenacity as t
 from httpx import (
@@ -23,6 +23,7 @@ from httpx import (
     AsyncClient,
     AsyncHTTPTransport,
     Client,
+    HTTPError,
     HTTPStatusError,
     HTTPTransport,
     Limits,
@@ -36,17 +37,13 @@ from ._env import env
 _retriable_errors: tuple[type[BaseException], ...] = (
     asyncio.TimeoutError,
     urllib.error.HTTPError,
+    HTTPError,
 )
 
 with suppress(ImportError):
     import requests
 
     _retriable_errors += (requests.HTTPError,)
-
-with suppress(ImportError):
-    import httpx
-
-    _retriable_errors += (httpx.HTTPError,)
 
 with suppress(ImportError):
     import aiohttp
@@ -211,63 +208,76 @@ def guess_name(obj: object) -> str:
     return (f'{mod}.{name}' if mod else name) if name else repr(obj)
 
 
-_limits = Limits(max_connections=None, max_keepalive_connections=20)
+def _get_transports() -> tuple[HTTPTransport, AsyncHTTPTransport]:
+    limits = Limits(
+        max_connections=env.MAX_CONNECTIONS,
+        max_keepalive_connections=env.MAX_KEEP_ALIVE_CONNECTIONS,
+    )
 
-# Use SSL_CERT_FILE envvar to pass `cafile`
-_transport = HTTPTransport(
-    verify=env.SSL_VERIFY, limits=_limits, retries=env.RETRIES
-)
-_atransport = AsyncHTTPTransport(
-    verify=env.SSL_VERIFY, limits=_limits, retries=env.RETRIES
-)
+    # Use SSL_CERT_FILE envvar to pass `cafile`
+    sync = HTTPTransport(
+        verify=env.SSL_VERIFY, limits=limits, retries=env.RETRIES
+    )
+    async_ = AsyncHTTPTransport(
+        verify=env.SSL_VERIFY, limits=limits, retries=env.RETRIES
+    )
+    return sync, async_
+
+
+# Global pool for all HTTP requests
+_transport, _atransport = _get_transports()
 
 
 def get_clients(
-    base_url: str = '', timeout: float | None = None
+    base_url: Any = '',
+    timeout: float | None = None,
+    follow_redirects: bool = True,
 ) -> tuple[Client, AsyncClient]:
-    sc = Client(
+    base_url = str(base_url)
+    sync = Client(
         timeout=timeout,
-        follow_redirects=True,
+        follow_redirects=follow_redirects,
         base_url=base_url,
         transport=_transport,
     )
-    ac = AsyncClient(
+    async_ = AsyncClient(
         timeout=timeout,
-        follow_redirects=True,
+        follow_redirects=follow_redirects,
         base_url=base_url,
         transport=_atransport,
     )
-    return sc, ac
+    return sync, async_
 
 
 def raise_for_status(resp: Response) -> asyncio.Future[Response]:
+    """Raise status error if one occured.
+
+    Adds more context to `Response.raise_for_status` (like response content).
+    For sync response - call `.result()` on returned value first.
+    For async response - DON'T FORGET to `await` first.
+    """
     if resp.is_success:
         f = asyncio.Future[Response]()
         f.set_result(resp)
+        return f
+
+    # closed response or any synchronous response
+    if resp.is_closed or not isinstance(resp.stream, AsyncByteStream):
+        f = asyncio.Future[Response]()
+        f.set_exception(_new_status_error(resp, resp.read()))
+        return f
 
     # opened asynchronous response
-    elif isinstance(resp.stream, AsyncByteStream) and not resp.is_closed:
+    async def _fail() -> Response:
+        exc = _new_status_error(resp, await resp.aread())
+        raise exc from None
 
-        async def _fail() -> Response:
-            data = await resp.aread()
-            exc = _failed_response(resp, data)
-            raise exc from None
-
-        f = asyncio.ensure_future(_fail())
-
-    # closed asynchronous response or any synchronous response
-    else:
-        exc = _failed_response(resp, resp.read())
-
-        f = asyncio.Future[Response]()
-        f.set_exception(exc)
-
-    return f
+    return asyncio.ensure_future(_fail())
 
 
-def _failed_response(resp: Response, content: bytes) -> HTTPStatusError:
-    status_class = resp.status_code // 100
-    error_type = _ERROR_TYPES.get(status_class, 'Invalid status code')
+def _new_status_error(resp: Response, content: bytes) -> HTTPStatusError:
+    status_cls = resp.status_code // 100
+    error_type = _ERROR_TYPES.get(status_cls, 'Invalid status code')
     message = (
         f"{error_type} '{resp.status_code} {resp.reason_phrase}' "
         f"for url '{resp.url}' failed with {content.decode()}"

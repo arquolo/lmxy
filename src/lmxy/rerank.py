@@ -49,9 +49,7 @@ class Reranker(BaseNodePostprocessor):
     timeout: float | None = Field(
         default=360.0, description='HTTP connection timeout'
     )
-    cache_expiry: float | None = Field(
-        default=36000.0, description='Time to persist in cache'
-    )
+    # TODO: support caching (by node ID)
 
     def model_post_init(self, context) -> None:
         self._metadata_mode = (
