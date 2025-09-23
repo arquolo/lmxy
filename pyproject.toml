@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.1.11"
+version = "0.1.12"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -43,13 +43,13 @@ base = [  # responses, rerank, embed
     "llama-index-utils-huggingface",
 ]
 tokenizer = [
-    "glow~=0.15.0",
+    "glow~=0.15.4",
     "tiktoken",
     "transformers",
 ]
 fastembed = [
     "fastembed~=0.7.0",
-    "glow~=0.15.0",
+    "glow~=0.15.4",
 ]
 openailike = [
     "lmxy[base,tokenizer]",
@@ -57,7 +57,7 @@ openailike = [
 ]
 qdrant = [
     "lmxy[base,fastembed]",
-    "glow~=0.15.3",
+    "glow~=0.15.4",
     "grpcio",  # transitive
     "orjson",
     "qdrant-client~=1.15.1",
