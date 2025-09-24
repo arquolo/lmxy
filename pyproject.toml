@@ -62,6 +62,12 @@ qdrant = [
     "orjson",
     "qdrant-client~=1.15.1",
 ]
+bert_score = [
+    "glow~=0.15",
+    "tqdm",
+    "torch>=2.0",
+    "transformers~=4.0",
+]
 all = [
     "lmxy[openailike,qdrant]",
 ]
