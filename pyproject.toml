@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.1.13"
+version = "0.1.14"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -39,7 +39,7 @@ homepage = "https://github.com/arquolo/lmx"
 
 [project.optional-dependencies]
 base = [  # responses, rerank, embed
-    "llama-index-core~=0.13.0",
+    "llama-index-core >=0.13.0,<0.15",
     "llama-index-utils-huggingface",
 ]
 tokenizer = [
@@ -79,10 +79,10 @@ dev-core = [
     "flake8-pyproject",
     "flake8-simplify",
     "isort",
-    "mypy~=1.17",
+    "mypy~=1.18",
     "pytest~=8.0",
     "pytest-asyncio",
-    "ruff~=0.12.2",
+    "ruff~=0.13.2",
     "types-requests",
 ]
 dev = [
