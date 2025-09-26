@@ -490,7 +490,7 @@ class QdrantVectorStore(BaseModel):
         )
 
     # CRUD: delete
-    async def adelete_nodes(self, node_ids: list[str]) -> None:
+    async def adelete_nodes(self, node_ids: Sequence[str]) -> None:
         if not await self.is_initialized():
             return
         cond = rest.HasIdCondition(has_id=node_ids)  # type: ignore[arg-type]

@@ -7,7 +7,13 @@ __all__ = [
     'VectorStore',
 ]
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Sequence,
+)
 from typing import TYPE_CHECKING, Any, Protocol, Union
 
 if TYPE_CHECKING:
@@ -48,7 +54,9 @@ type Tokenize = Callable[[str], list[Any]]
 
 class VectorStore(Protocol):
     # CRUD: Create & Update (overwrite)
-    async def async_add(self, nodes: list['BaseNode']) -> list[str]: ...
+    async def async_add(
+        self, nodes: Sequence['BaseNode']
+    ) -> Sequence[str]: ...
 
     # CRUD: Read
     async def aquery(
@@ -62,4 +70,4 @@ class VectorStore(Protocol):
 
     # CRUD: Delete
     async def adelete(self, ref_doc_id: str) -> None: ...
-    async def adelete_nodes(self, node_ids: list[str]) -> None: ...
+    async def adelete_nodes(self, node_ids: Sequence[str]) -> None: ...
