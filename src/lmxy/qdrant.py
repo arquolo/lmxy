@@ -319,9 +319,9 @@ class QdrantVectorStore(BaseModel):
 
         Returns node IDs that were added to the index.
         """
-        if nodes:
-            await self.initialize(vector_size=len(nodes[0].get_embedding()))
-
+        if not nodes:
+            return []
+        await self.initialize(vector_size=len(nodes[0].get_embedding()))
         return await self._upsert(nodes)
 
     async def _build_points(
@@ -506,6 +506,8 @@ class QdrantVectorStore(BaseModel):
     # low levels
 
     async def _ll_upsert(self, nodes: Sequence[BaseNode], /) -> Sequence[str]:
+        if not nodes:
+            return []
         points = await self._build_points(nodes)
         await self.aclient.upsert(self.collection_name, points)
         return [node.id_ for node in nodes]
@@ -513,6 +515,8 @@ class QdrantVectorStore(BaseModel):
     async def _ll_query(
         self, reqs: Sequence[rest.QueryRequest], /
     ) -> Sequence[VectorStoreQueryResult]:
+        if not reqs:
+            return []
         qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
         return [_parse_to_query_result(r.points) for r in qrs]
 
