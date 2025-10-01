@@ -439,6 +439,7 @@ class QdrantVectorStore(BaseModel):
             return results[0]
 
         # (dense, sparse)
+        assert hybrid_k > 0
         assert self.hybrid_fusion_fn is not None
         return self.hybrid_fusion_fn(*results, alpha=alpha, top_k=hybrid_k)
 
@@ -458,7 +459,15 @@ class QdrantVectorStore(BaseModel):
         sparse_k = dense_k if q.sparse_top_k is None else q.sparse_top_k
         hybrid_k = dense_k if q.hybrid_top_k is None else q.hybrid_top_k
 
-        dense_k, sparse_k = min(dense_k, hybrid_k), min(sparse_k, hybrid_k)
+        # With hybrid search we get:
+        # - nodes from dense search (and only dense scores)
+        # - nodes from sparse search (and only sparse scores)
+        # - nodes present in both (and merged scores).
+        # `dense_k`/`sparse_k` are not bound by hybrid_k.
+        # Large `dense_k`/`sparse_k` increase chance of getting merged nodes.
+
+        # hybrid_k is top bound, it cuts only up to dense_k+sparse_k
+        hybrid_k = min(hybrid_k, dense_k + sparse_k)
 
         # Full sparse
         if alpha <= 0:
@@ -470,11 +479,11 @@ class QdrantVectorStore(BaseModel):
                     'to allow sparse/hybrid search'
                 )
                 raise ValueError(msg)
-            return 0, sparse_k, hybrid_k, 0.0  # Skip dense search
+            return 0, sparse_k, -1, 0.0  # Skip dense search
 
         # Full dense or no data for sparse
         if alpha >= 1 or not self.sparse_query_fn:
-            return dense_k, 0, hybrid_k, 1.0  # Skip sparse search
+            return dense_k, 0, -1, 1.0  # Skip sparse search
 
         return dense_k, sparse_k, hybrid_k, alpha
 
@@ -491,7 +500,7 @@ class QdrantVectorStore(BaseModel):
 
     # CRUD: delete
     async def adelete_nodes(self, node_ids: Sequence[str]) -> None:
-        if not await self.is_initialized():
+        if not node_ids or not await self.is_initialized():
             return
         cond = rest.HasIdCondition(has_id=node_ids)  # type: ignore[arg-type]
         await self.aclient.delete(
