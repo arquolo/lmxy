@@ -14,21 +14,20 @@ from math import log1p
 from typing import NamedTuple
 
 import torch
-import transformers
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from tqdm.auto import tqdm
 from transformers import (
     AutoModel,
-    AutoTokenizer,
     GPT2Tokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
     RobertaTokenizer,
 )
 
+from .tokenizer import get_tf_tokenizer
+
 logger = getLogger(__name__)
-_CACHE_DIR = transformers.utils.hub.TRANSFORMERS_CACHE
 
 
 class _Embedding(NamedTuple):
@@ -50,8 +49,8 @@ def score(
     device: str | None = None,
     fast_tokenize: bool = False,
     verbose: bool = False,
-    cache_dir: str | None = _CACHE_DIR,
-    local_files_only: bool | None = None,
+    cache_dir: str | None = None,
+    local_files_only: bool = False,
 ) -> tuple[Tensor, Tensor, Tensor]:
     """BERTScore metric.
 
@@ -68,7 +67,7 @@ def score(
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    tokenizer = get_tokenizer(
+    tokenizer = get_tf_tokenizer(
         model_name,
         use_fast=fast_tokenize,
         cache_dir=cache_dir,
@@ -153,8 +152,8 @@ def get_model(
     /,
     *,
     device: str = 'cpu',
-    cache_dir: str | None = _CACHE_DIR,
-    local_files_only: bool | None = None,
+    cache_dir: str | None = None,
+    local_files_only: bool = False,
 ) -> PreTrainedModel:
     assert num_layers >= 0
     logger.info(
@@ -201,24 +200,6 @@ def get_model(
     assert isinstance(mod, torch.nn.ModuleList)
     del mod[num_layers:]
     return model
-
-
-def get_tokenizer(
-    name: str,
-    use_fast: bool = False,
-    cache_dir: str | None = _CACHE_DIR,
-    local_files_only: bool | None = None,
-) -> PreTrainedTokenizer:
-    logger.info(
-        f'Loading tokenizer for model {name!r}'
-        f' ({cache_dir=}, {local_files_only=})'
-    )
-    return AutoTokenizer.from_pretrained(
-        name,
-        use_fast=use_fast,
-        cache_dir=cache_dir,
-        local_files_only=local_files_only,
-    )
 
 
 @torch.inference_mode()

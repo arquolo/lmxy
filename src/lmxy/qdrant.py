@@ -7,28 +7,13 @@ __all__ = [
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Collection, Iterable, Sequence
-from typing import Any, Protocol, cast, runtime_checkable
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
-import orjson
 from glow import astreaming
 from grpc import RpcError
-from llama_index.core.schema import (
-    BaseNode,
-    ImageNode,
-    IndexNode,
-    MetadataMode,
-    Node,
-    TextNode,
-)
-from llama_index.core.vector_stores import (
-    FilterCondition,
-    MetadataFilter,
-    MetadataFilters,
-    VectorStoreQuery,
-    VectorStoreQueryResult,
-)
-from llama_index.core.vector_stores.types import VectorStoreQueryMode
+from llama_index.core.schema import MetadataMode
+from llama_index.core.vector_stores import MetadataFilters
 from pydantic import BaseModel, PrivateAttr
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.conversions.common_types import QuantizationConfig
@@ -36,9 +21,16 @@ from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
 from qdrant_client.http import models as rest
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+from ._nodes import metadata_dict_to_node, node_to_metadata_dict
 from ._types import SparseEncode
 from .fastembed import get_sparse_encoder
 from .util import aretry
+
+if TYPE_CHECKING:
+    from llama_index.core.schema import BaseNode
+    from llama_index.core.vector_stores import MetadataFilter, VectorStoreQuery
+
+type _QueryResponse = Sequence[tuple['BaseNode', float]]
 
 _DENSE_NAME = 'text-dense'
 _SPARSE_NAME = 'text-sparse'
@@ -51,59 +43,49 @@ logger = logging.getLogger(__name__)
 class HybridFuse(Protocol):
     def __call__(
         self,
-        dense: VectorStoreQueryResult,
-        sparse: VectorStoreQueryResult,
+        dense: _QueryResponse,
+        sparse: _QueryResponse,
         /,
         *,
         alpha: float = ...,
         top_k: int = ...,
-    ) -> VectorStoreQueryResult: ...
+    ) -> _QueryResponse: ...
 
 
 def _relative_score_fusion(
-    dense: VectorStoreQueryResult,
-    sparse: VectorStoreQueryResult,
+    dense: _QueryResponse,
+    sparse: _QueryResponse,
     # NOTE: only for hybrid search (0 for sparse search, 1 for dense search)
     alpha: float = 0.5,
     top_k: int = 2,
-) -> VectorStoreQueryResult:
+) -> _QueryResponse:
     """Fuse dense and sparse results using relative score fusion."""
-    if not dense.nodes and not sparse.nodes:
-        return VectorStoreQueryResult(nodes=[], similarities=[], ids=[])
-    if not sparse.nodes or alpha >= 1:
+    if not dense and not sparse:
+        return []
+    if not sparse or alpha >= 1:
         return dense
-    if not dense.nodes or alpha <= 0:
+    if not dense or alpha <= 0:
         return sparse
-
-    assert dense.similarities is not None
-    assert sparse.similarities is not None
 
     # deconstruct results
     dense_scores = {
-        n.id_: x for n, x in zip(dense.nodes, _min_max(dense.similarities))
+        n.id_: x for (n, _), x in zip(dense, _min_max([s for _, s in dense]))
     }
     sparse_scores = {
-        n.id_: x for n, x in zip(sparse.nodes, _min_max(sparse.similarities))
+        n.id_: x for (n, _), x in zip(sparse, _min_max([s for _, s in sparse]))
     }
 
     # fuse scores
-    all_nodes = {n.id_: n for n in [*dense.nodes, *sparse.nodes]}
+    all_nodes = {n.id_: n for n, _ in [*dense, *sparse]}
     fused = [
         (
+            node,
             (1 - alpha) * sparse_scores.get(id_, 0)
             + alpha * dense_scores.get(id_, 0),
-            node,
         )
         for id_, node in all_nodes.items()
     ]
-    fused = sorted(fused, key=lambda x: x[0], reverse=True)[:top_k]
-
-    # create final response object
-    return VectorStoreQueryResult(
-        nodes=[x[1] for x in fused],
-        similarities=[x[0] for x in fused],
-        ids=[x[1].id_ for x in fused],
-    )
+    return sorted(fused, key=lambda x: x[1], reverse=True)[:top_k]
 
 
 class QdrantVectorStore(BaseModel):
@@ -139,7 +121,7 @@ class QdrantVectorStore(BaseModel):
     hnsw_config: rest.HnswConfigDiff | None = None
     optimizers_config: rest.OptimizersConfigDiff | None = None
     quantization_config: QuantizationConfig | None = None
-    tenant_field_name: str | None = None  # For multitenancy
+    tenant_fields: list[str] = []  # For multitenancy
 
     # Sparse search parameters
     sparse_doc_fn: SparseEncode | None = None
@@ -151,12 +133,12 @@ class QdrantVectorStore(BaseModel):
     hybrid_fusion_fn: HybridFuse = _relative_score_fusion
 
     _upsert: Callable[
-        [Sequence[BaseNode]],
+        [Sequence['BaseNode']],
         Awaitable[Sequence[str]],
     ] = PrivateAttr()
     _query: Callable[
         [Sequence[rest.QueryRequest]],
-        Awaitable[Sequence[VectorStoreQueryResult]],
+        Awaitable[Sequence[_QueryResponse]],
     ] = PrivateAttr()
 
     _is_initialized: bool = PrivateAttr()
@@ -227,14 +209,6 @@ class QdrantVectorStore(BaseModel):
                 quantization_config=self.quantization_config,
             )
 
-            # To improve search performance Qdrant recommends setting up
-            # a payload index for fields used in filters.
-            # https://qdrant.tech/documentation/concepts/indexing
-            await self.aclient.create_payload_index(
-                self.collection_name,
-                field_name='doc_id',
-                field_schema=rest.PayloadSchemaType.KEYWORD,
-            )
             self._is_initialized = True
         except (RpcError, ValueError, UnexpectedResponse) as exc:
             if 'already exists' not in str(exc):
@@ -245,14 +219,26 @@ class QdrantVectorStore(BaseModel):
             )
             assert await self._is_initialized_unsafe()
 
-        if self.tenant_field_name is not None:
-            await self.aclient.create_payload_index(
-                self.collection_name,
-                field_name=self.tenant_field_name,
-                field_schema=rest.KeywordIndexParams(
-                    type=rest.KeywordIndexType.KEYWORD, is_tenant=True
-                ),
+        await self._setup_indices()
+
+    async def _setup_indices(self):
+        tenant_schema = rest.KeywordIndexParams(
+            type=rest.KeywordIndexType.KEYWORD, is_tenant=True
+        )
+        name_n_schema = [('doc_id', rest.PayloadSchemaType.KEYWORD)] + [
+            (field, tenant_schema) for field in self.tenant_fields
+        ]
+
+        # To improve search performance set up a payload index
+        # for fields used in filters.
+        # https://qdrant.tech/documentation/concepts/indexing
+        aws = (
+            self.aclient.create_payload_index(
+                self.collection_name, field_name=name, field_schema=schema
             )
+            for name, schema in name_n_schema
+        )
+        await asyncio.gather(*aws)
 
     async def _is_initialized_unsafe(self) -> bool:
         if self._is_initialized:
@@ -300,21 +286,19 @@ class QdrantVectorStore(BaseModel):
         return True
 
     async def _load_models(self) -> None:
-        if self.sparse_doc_fn is None and self.sparse_model is not None:
-            self.sparse_doc_fn = await asyncio.to_thread(
-                get_sparse_encoder,
-                self.sparse_model,
-                **self.sparse_model_kwargs,
-            )
-        if self.sparse_query_fn is None and self.sparse_model is not None:
-            self.sparse_query_fn = await asyncio.to_thread(
-                get_sparse_encoder,
-                self.sparse_model,
-                **self.sparse_model_kwargs,
-            )
+        if self.sparse_model is None or (
+            self.sparse_doc_fn is not None and self.sparse_query_fn is not None
+        ):
+            return
+
+        encoder = await asyncio.to_thread(
+            get_sparse_encoder, self.sparse_model, **self.sparse_model_kwargs
+        )
+        self.sparse_doc_fn = self.sparse_doc_fn or encoder
+        self.sparse_query_fn = self.sparse_query_fn or encoder
 
     # CRUD: create or update
-    async def async_add(self, nodes: Sequence[BaseNode]) -> Sequence[str]:
+    async def async_add(self, nodes: Sequence['BaseNode'], /) -> Sequence[str]:
         """Add nodes with embeddings to Qdrant index.
 
         Returns node IDs that were added to the index.
@@ -325,7 +309,7 @@ class QdrantVectorStore(BaseModel):
         return await self._upsert(nodes)
 
     async def _build_points(
-        self, nodes: Sequence[BaseNode]
+        self, nodes: Sequence['BaseNode'], /
     ) -> list[rest.PointStruct]:
         if not nodes:
             return []
@@ -340,15 +324,17 @@ class QdrantVectorStore(BaseModel):
 
         points: list[rest.PointStruct] = []
         for node, semb in zip(nodes, sparse_embeddings, strict=True):
-            demb = node.get_embedding()
-            vector: rest.VectorStruct = (
-                demb  # type: ignore[assignment]
-                if self._is_legacy
-                else (
-                    {_DENSE_NAME: demb}
-                    | ({} if semb is None else {_SPARSE_NAME: semb})
-                )
-            )
+            demb = node.embedding
+
+            vector: rest.VectorStruct | None
+            if self._is_legacy:
+                vector = demb
+            else:
+                vecs = {_DENSE_NAME: demb, _SPARSE_NAME: semb}
+                vector = {k: v for k, v in vecs.items() if v is not None}
+            if not vector:
+                raise ValueError('Embedding is not set')
+
             payload = node_to_metadata_dict(node)
 
             pt = rest.PointStruct(id=node.id_, vector=vector, payload=payload)
@@ -358,15 +344,16 @@ class QdrantVectorStore(BaseModel):
     # CRUD: read
     async def aquery(
         self,
-        query: VectorStoreQuery,
+        query: 'VectorStoreQuery',
+        /,
         *,
         qdrant_filters: rest.Filter | None = None,
         with_payload: list[str] | bool = True,
         dense_threshold: float | None = None,
-    ) -> VectorStoreQueryResult:
+    ) -> '_QueryResponse':
         """Query index for top k most similar nodes."""
         if not await self.is_initialized():
-            return VectorStoreQueryResult([], [], [])
+            return []
 
         #  NOTE: users can pass in qdrant_filters
         # (nested/complicated filters) to override the default MetadataFilters
@@ -381,9 +368,9 @@ class QdrantVectorStore(BaseModel):
             assert query.filters is None
             assert qdrant_filters is None
             records = await self.aclient.retrieve(
-                self.collection_name, query.node_ids
+                self.collection_name, query.node_ids, with_payload=with_payload
             )
-            return _parse_to_query_result(records)
+            return _parse_query_results(records)
 
         dense_k, sparse_k, hybrid_k, alpha = self._parse_query(query)
 
@@ -432,7 +419,7 @@ class QdrantVectorStore(BaseModel):
             )
 
         if not reqs:
-            return VectorStoreQueryResult([], [], [])
+            return []
 
         results = await self._query(reqs)
         if len(results) != 2:  # (dense) or (sparse)
@@ -443,13 +430,15 @@ class QdrantVectorStore(BaseModel):
         assert self.hybrid_fusion_fn is not None
         return self.hybrid_fusion_fn(*results, alpha=alpha, top_k=hybrid_k)
 
-    def _parse_query(self, q: VectorStoreQuery) -> tuple[int, int, int, float]:
-        match q.mode:
-            case VectorStoreQueryMode.DEFAULT:
+    def _parse_query(
+        self, q: 'VectorStoreQuery', /
+    ) -> tuple[int, int, int, float]:
+        match q.mode.value:
+            case 'default':
                 alpha = 1.0
-            case VectorStoreQueryMode.HYBRID:
+            case 'hybrid':
                 alpha = 0.5 if q.alpha is None else q.alpha
-            case VectorStoreQueryMode.SPARSE:
+            case 'sparse':
                 alpha = 0.0
             case _ as unsupported:
                 msg = f'Unsupported query mode: {unsupported}'
@@ -499,7 +488,7 @@ class QdrantVectorStore(BaseModel):
         )
 
     # CRUD: delete
-    async def adelete_nodes(self, node_ids: Sequence[str]) -> None:
+    async def adelete_nodes(self, node_ids: Sequence[str], /) -> None:
         if not node_ids or not await self.is_initialized():
             return
         cond = rest.HasIdCondition(has_id=node_ids)  # type: ignore[arg-type]
@@ -514,7 +503,9 @@ class QdrantVectorStore(BaseModel):
 
     # low levels
 
-    async def _ll_upsert(self, nodes: Sequence[BaseNode], /) -> Sequence[str]:
+    async def _ll_upsert(
+        self, nodes: Sequence['BaseNode'], /
+    ) -> Sequence[str]:
         if not nodes:
             return []
         points = await self._build_points(nodes)
@@ -523,11 +514,11 @@ class QdrantVectorStore(BaseModel):
 
     async def _ll_query(
         self, reqs: Sequence[rest.QueryRequest], /
-    ) -> Sequence[VectorStoreQueryResult]:
+    ) -> Sequence[_QueryResponse]:
         if not reqs:
             return []
         qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
-        return [_parse_to_query_result(r.points) for r in qrs]
+        return [_parse_query_results(r.points) for r in qrs]
 
 
 async def _aembed_sparse(
@@ -540,9 +531,10 @@ async def _aembed_sparse(
     ]
 
 
-def _min_max(xs: Collection[float]) -> Collection[float]:
-    if ptp := max(xs) - (lo := min(xs)):
-        return [(x - lo) / ptp for x in xs]
+def _min_max(xs: Sequence[float], /) -> Sequence[float]:
+    lo, hi = min(xs), max(xs)
+    if ptp := hi - lo:
+        return [(x - lo) / ptp for x in xs]  # scale to 0..1
     return xs
 
 
@@ -587,18 +579,21 @@ def _build_subfilter(mfs: MetadataFilters | None) -> rest.Filter | None:
         for mf in mfs.filters
     ]
     conditions = [c for c in nullable_conditions if c]
-    match mfs.condition:
-        case FilterCondition.AND:
+    if mfs.condition is None:
+        return rest.Filter()
+
+    match mfs.condition.value:
+        case 'and':
             return rest.Filter(must=conditions)
-        case FilterCondition.OR:
+        case 'or':
             return rest.Filter(should=conditions)
-        case FilterCondition.NOT:
+        case 'not':
             return rest.Filter(must_not=conditions)
-        case _:
-            return rest.Filter()
+        case _ as unknown:
+            raise NotImplementedError(f'Unknown FilterCondition: {unknown}')
 
 
-def _meta_to_condition(f: MetadataFilter) -> rest.Condition | None:
+def _meta_to_condition(f: 'MetadataFilter') -> rest.Condition | None:
     op = f.operator
     if op.name in {'LT', 'GT', 'LTE', 'GTE'}:
         return rest.FieldCondition(
@@ -651,16 +646,14 @@ def _meta_to_condition(f: MetadataFilter) -> rest.Condition | None:
 # ------------------------ from qdrant to llama index ------------------------
 
 
-def _parse_to_query_result(
+def _parse_query_results(
     points: Iterable[rest.Record | rest.ScoredPoint],
-) -> VectorStoreQueryResult:
-    nodes: list[BaseNode] = []
-    similarities: list[float] = []
-    ids: list[str] = []
+) -> '_QueryResponse':
+    scored: list[tuple[BaseNode, float]] = []
 
     for pt in points:
         assert pt.payload is not None
-        node = metadata_dict_to_node(pt.payload)
+        node = metadata_dict_to_node(pt.payload, with_id=pt.id)
 
         if node.embedding is None:
             vecs = pt.vector
@@ -672,12 +665,10 @@ def _parse_to_query_result(
             ):
                 node.embedding = vec  # type: ignore[assignment]
 
-        nodes.append(node)
-        ids.append(str(pt.id))
-        similarities.append(
-            pt.score if isinstance(pt, rest.ScoredPoint) else 1.0
-        )
+        s = pt.score if isinstance(pt, rest.ScoredPoint) else 1.0
+        scored.append((node, s))
 
+    similarities = [s for _, s in scored]
     if any(similarities):
         logger.debug(
             'Retrieved %d nodes with score: %.3g - %.3g',
@@ -686,58 +677,4 @@ def _parse_to_query_result(
             max(similarities),
         )
 
-    return VectorStoreQueryResult(
-        nodes=nodes, similarities=similarities, ids=ids
-    )
-
-
-# ------------------------ metadata to payload and back ----------------------
-
-
-def node_to_metadata_dict(node: BaseNode) -> dict:
-    """Common logic for saving Node data into metadata dict."""
-    # See: llama_index.core.vector_stores.utils:node_to_metadata_dict
-    # NOTE: original greatly bloats qdrant because of JSON dump below
-
-    # Using mode="json" here because BaseNode may have fields
-    # of type bytes (e.g. images in ImageBlock),
-    # which would cause serialization issues.
-    node_dict = node.model_dump(mode='json')
-
-    # Remove embedding from node_dict
-    node_dict.pop('embedding', None)  # ! originally set None
-
-    # Make metadata the top level
-    metadata: dict = node_dict.pop('metadata', {})  # ! originally `get()`
-
-    return metadata | {
-        # dump remainder of node_dict to json string
-        '_node_content': orjson.dumps(node_dict).decode(),
-        '_node_type': node.class_name(),
-        # store ref doc id at top level to allow metadata filtering
-        'doc_id': src.node_id if (src := node.source_node) else 'None',
-    }
-
-
-def metadata_dict_to_node(metadata: dict) -> BaseNode:
-    """Load generic Node from metadata dict."""
-    # See: llama_index.core.vector_stores.utils:metadata_dict_to_node
-    # ! This one is altered to be compatible with above.
-    node_json = metadata.pop('_node_content', None)
-    node_type = metadata.pop('_node_type', None)
-    if node_json is None:
-        msg = 'Node content not found in metadata dict.'
-        raise ValueError(msg)
-
-    metadata = {
-        k: v
-        for k, v in metadata.items()
-        if k not in {'document_id', 'doc_id', 'ref_doc_id'}
-    }
-    data = orjson.loads(node_json)
-    data.setdefault('metadata', metadata)
-    data.pop('class_name', None)
-
-    tps = {tp.class_name(): tp for tp in (Node, IndexNode, ImageNode)}
-    tp = tps.get(node_type, TextNode)
-    return tp(**data)
+    return scored
