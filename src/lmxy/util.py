@@ -35,7 +35,7 @@ from ._env import env
 # --------------------------------- retrying ---------------------------------
 
 _retriable_errors: tuple[type[BaseException], ...] = (
-    asyncio.TimeoutError,
+    TimeoutError,
     urllib.error.HTTPError,
     HTTPError,
 )
