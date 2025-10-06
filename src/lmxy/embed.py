@@ -1,6 +1,6 @@
 __all__ = ['Embedder']
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Literal
 
 from httpx import (
@@ -16,7 +16,7 @@ from llama_index.utils.huggingface import (
     get_query_instruct_for_model_name,
     get_text_instruct_for_model_name,
 )
-from pydantic import Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
 from .util import get_clients, raise_for_status
 
@@ -111,49 +111,55 @@ class Embedder(BaseEmbedding):
     def class_name(cls) -> str:
         return 'RemoteEmbedding'
 
-    def _get_query_embedding(self, query: str) -> list[float]:
+    def _get_query_embedding(self, query: str) -> Embedding:
         """Get query embedding."""
-        return self._embed([query], mode='query')[0]
+        texts = self._with_inst([query], mode='query')
+        return self._embed(texts)[0]
 
-    def _get_text_embedding(self, text: str) -> list[float]:
+    def _get_text_embedding(self, text: str) -> Embedding:
         """Get text embedding."""
-        return self._embed([text], mode='text')[0]
+        texts = self._with_inst([text], mode='text')
+        return self._embed(texts)[0]
 
-    def _get_text_embeddings(self, texts: list[str]) -> list[list[float]]:
+    def _get_text_embeddings(self, texts: Sequence[str]) -> list[Embedding]:
         """Get text embeddings."""
-        return self._embed(texts, mode='text')
+        texts = self._with_inst(texts, mode='text')
+        return self._embed(texts)
 
-    async def _aget_query_embedding(self, query: str) -> list[float]:
+    async def _aget_query_embedding(self, query: str) -> Embedding:
         """Get query embedding async."""
-        return (await self._aembed([query], mode='query'))[0]
+        texts = self._with_inst([query], mode='query')
+        return (await self._aembed(texts))[0]
 
-    async def _aget_text_embedding(self, text: str) -> list[float]:
+    async def _aget_text_embedding(self, text: str) -> Embedding:
         """Get text embedding async."""
-        return (await self._aembed([text], mode='text'))[0]
+        texts = self._with_inst([text], mode='text')
+        return (await self._aembed(texts))[0]
 
-    async def _aget_text_embeddings(self, texts: list[str]) -> list[Embedding]:
-        return await self._aembed(texts, mode='text')
+    async def _aget_text_embeddings(
+        self, texts: Sequence[str]
+    ) -> list[Embedding]:
+        """Get text embeddings async."""
+        texts = self._with_inst(texts, mode='text')
+        return await self._aembed(texts)
 
-    def _embed(
-        self, texts: list[str], mode: Literal['query', 'text'] | None = None
-    ) -> list[list[float]]:
-        req = self._create_request(texts, mode=mode)
+    def _embed(self, texts: Sequence[str]) -> list[Embedding]:
+        req = self._request(texts)
         resp = _client.send(req)
-        return self._handle_response(resp)
+        return _handle_response(resp)
 
-    async def _aembed(
-        self, texts: list[str], mode: Literal['query', 'text'] | None = None
-    ) -> list[list[float]]:
-        req = self._create_request(texts, mode=mode)
+    async def _aembed(self, texts: Sequence[str]) -> list[Embedding]:
+        req = self._request(texts)
         resp = await _aclient.send(req)
-        return self._handle_response(resp)
+        return _handle_response(resp)
 
-    def _create_request(
-        self, texts: list[str], mode: Literal['query', 'text'] | None = None
-    ) -> Request:
-        if mode and (inst := self._instructions.get(mode)) is not None:
-            texts = [f'{inst} {t}'.strip() for t in texts]
+    def _with_inst(
+        self, texts: Sequence[str], mode: Literal['query', 'text']
+    ) -> Sequence[str]:
+        inst = self._instructions.get(mode, '')
+        return [f'{inst} {t}'.strip() for t in texts]
 
+    def _request(self, texts: Sequence[str]) -> Request:
         headers = {'Content-Type': 'application/json'}
         if callable(self.auth_token):
             headers['Authorization'] = self.auth_token(self.base_url)
@@ -168,21 +174,30 @@ class Embedder(BaseEmbedding):
             extensions={'timeout': Timeout(self.timeout).as_dict()},
         )
 
-    @staticmethod
-    def _handle_response(response: Response) -> list[list[float]]:
-        j = raise_for_status(response).result().json()
 
-        # NOTE: not match-case because PyArmor works only with attrs & literals
-        # Text Embeddings Inference
-        if isinstance(j, list):
-            return j
+def _handle_response(response: Response) -> list[Embedding]:
+    data = raise_for_status(response).result().content
+    obj = _parse_embeddings(data)
+    match obj:
+        case _OllamaResponse():
+            return obj.embeddings
+        case _OpenAiResponse():
+            return [x.embedding for x in obj.data]
+        case _:
+            return obj
 
-        # Ollama
-        if xs := j.get('embeddings', []):
-            return list(xs)
 
-        # OpenAI
-        if xs := j.get('data', []):
-            return [x['embedding'] for x in xs]
+class _OllamaResponse(BaseModel):
+    embeddings: list[Embedding]
 
-        raise NotImplementedError(f'Unknown embeddings schema: {j}')
+
+class _OpenAiEmbedding(BaseModel):
+    embedding: Embedding
+
+
+class _OpenAiResponse(BaseModel):
+    data: list[_OpenAiEmbedding]
+
+
+type _AnyEmbeddings = list[Embedding] | _OllamaResponse | _OpenAiResponse
+_parse_embeddings = TypeAdapter[_AnyEmbeddings](_AnyEmbeddings).validate_json
