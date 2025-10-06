@@ -1,6 +1,7 @@
 __all__ = [
     'aretry',
     'get_clients',
+    'get_ip_from_response',
     'raise_for_status',
     'warn_immediate_errors',
 ]
@@ -18,6 +19,7 @@ from types import CodeType
 from typing import Any, cast
 
 import tenacity as t
+from httpcore import NetworkStream
 from httpx import (
     AsyncByteStream,
     AsyncClient,
@@ -247,6 +249,13 @@ def get_clients(
         transport=_atransport,
     )
     return sync, async_
+
+
+def get_ip_from_response(resp: Response) -> str | None:
+    ns = resp.extensions.get('network_stream')
+    if isinstance(ns, NetworkStream):
+        return ns.get_extra_info('server_addr')
+    return None
 
 
 def raise_for_status(resp: Response) -> asyncio.Future[Response]:
