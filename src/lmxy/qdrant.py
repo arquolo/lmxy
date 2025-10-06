@@ -132,8 +132,8 @@ class QdrantVectorStore(BaseModel):
     # Hybrid search fusion
     hybrid_fusion_fn: HybridFuse = _relative_score_fusion
 
-    _upsert: Callable[
-        [Sequence['BaseNode']],
+    _update: Callable[
+        [Sequence['BaseNode | str']],
         Awaitable[Sequence[str]],
     ] = PrivateAttr()
     _query: Callable[
@@ -150,14 +150,14 @@ class QdrantVectorStore(BaseModel):
             UnexpectedResponse,
             max_attempts=self.max_retries,
         )
-        upsert = self._ll_upsert
+        update = self._ll_update
         if self.upsert_timeout is not None:
-            upsert = astreaming(
-                upsert,
+            update = astreaming(
+                update,
                 batch_size=self.upsert_batch_size,
                 timeout=self.upsert_timeout,
             )
-        self._upsert = retry_(upsert)
+        self._update = retry_(update)
 
         query = self._ll_query
         if self.query_timeout is not None:
@@ -303,10 +303,7 @@ class QdrantVectorStore(BaseModel):
 
         Returns node IDs that were added to the index.
         """
-        if not nodes:
-            return []
-        await self.initialize(vector_size=len(nodes[0].get_embedding()))
-        return await self._upsert(nodes)
+        return await self._update(nodes)
 
     async def _build_points(
         self, nodes: Sequence['BaseNode'], /
@@ -489,12 +486,7 @@ class QdrantVectorStore(BaseModel):
 
     # CRUD: delete
     async def adelete_nodes(self, node_ids: Sequence[str], /) -> None:
-        if not node_ids or not await self.is_initialized():
-            return
-        cond = rest.HasIdCondition(has_id=node_ids)  # type: ignore[arg-type]
-        await self.aclient.delete(
-            self.collection_name, rest.Filter(must=[cond])
-        )
+        await self._update(node_ids)
 
     async def aclear(self) -> None:
         async with _LOCK:
@@ -503,14 +495,38 @@ class QdrantVectorStore(BaseModel):
 
     # low levels
 
-    async def _ll_upsert(
-        self, nodes: Sequence['BaseNode'], /
+    async def _ll_update(
+        self, nodes: Sequence['BaseNode | str'], /
     ) -> Sequence[str]:
-        if not nodes:
-            return []
-        points = await self._build_points(nodes)
-        await self.aclient.upsert(self.collection_name, points)
-        return [node.id_ for node in nodes]
+        ids = [n if isinstance(n, str) else n.id_ for n in nodes]
+
+        # Merge and deduplicate updates & deletions
+        updates = dict(
+            (n, None) if isinstance(n, str) else (n.id_, n) for n in nodes
+        )
+        add_nodes = [n for n in updates.values() if n is not None]
+        rm_ids = [id_ for id_, n in updates.items() if n is None]
+
+        aws: list[Awaitable] = []
+
+        if add_nodes:
+            await self.initialize(len(add_nodes[0].get_embedding()))
+
+            points = await self._build_points(add_nodes)
+            aws.append(self.aclient.upsert(self.collection_name, points))
+
+        if rm_ids and await self.is_initialized():
+            cond = rest.HasIdCondition(has_id=rm_ids)  # type: ignore[arg-type]
+            aws.append(
+                self.aclient.delete(
+                    self.collection_name, rest.Filter(must=[cond])
+                )
+            )
+
+        if aws:
+            await asyncio.gather(*aws)
+
+        return ids
 
     async def _ll_query(
         self, reqs: Sequence[rest.QueryRequest], /
