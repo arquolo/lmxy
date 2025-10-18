@@ -7,14 +7,14 @@ __all__ = [
 ]
 
 import asyncio
-import logging
 import random
+import sys
 import urllib.error
 from collections.abc import Callable
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
-from types import CodeType
+from types import CodeType, FrameType
 from typing import Any, cast
 
 import tenacity as t
@@ -30,6 +30,7 @@ from httpx import (
     Limits,
     Response,
 )
+from loguru import logger
 
 from ._env import env
 
@@ -48,7 +49,6 @@ register_post_import_hook(
     lambda mod: _retriable_errors.append(mod.ClientError),
     'aiohttp',
 )
-logger = logging.getLogger(__name__)
 
 
 class aretry:  # noqa: N801
@@ -142,13 +142,16 @@ def warn_immediate_errors(rcs: t.RetryCallState) -> None:
         and rcs.outcome
         and (ex := rcs.outcome.exception()) is not None
     ):
-        logger.warning(
-            'Retrying %s #%d in %.2g seconds as it raised %s: %s.',
-            guess_name(rcs.fn),
-            rcs.attempt_number,
-            rcs.next_action.sleep,
-            ex.__class__.__name__,
-            ex,
+        f: FrameType | None = sys._getframe(1)
+
+        depth = 2  # this frame + ? `tenacity` frames + `aretry` frame
+        while f and 'tenacity' in f.f_code.co_filename:
+            f = f.f_back
+            depth += 1
+
+        logger.opt(depth=depth).warning(
+            f'#{rcs.attempt_number} in {rcs.next_action.sleep:.2g}s - '
+            f'{ex.__class__.__name__}: {ex}'
         )
 
 
