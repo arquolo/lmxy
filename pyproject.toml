@@ -28,6 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+    "glow~=0.15.4",
     "httpx",
     "pydantic~=2.10",
     "pydantic-settings",
@@ -43,13 +44,11 @@ base = [  # responses, rerank, embed
     "llama-index-utils-huggingface",
 ]
 tokenizer = [
-    "glow~=0.15.4",
     "tiktoken",
     "transformers",
 ]
 fastembed = [
     "fastembed~=0.7.0",
-    "glow~=0.15.4",
 ]
 openailike = [
     "lmxy[base,tokenizer]",
@@ -57,13 +56,11 @@ openailike = [
 ]
 qdrant = [
     "lmxy[base,fastembed]",
-    "glow~=0.15.4",
     "grpcio",  # transitive
     "orjson",
     "qdrant-client~=1.15.1",
 ]
 bert_score = [
-    "glow~=0.15",
     "tqdm",
     "torch>=2.0",
     "transformers~=4.0",

@@ -11,7 +11,6 @@ import logging
 import random
 import urllib.error
 from collections.abc import Callable
-from contextlib import suppress
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
@@ -19,7 +18,7 @@ from types import CodeType
 from typing import Any, cast
 
 import tenacity as t
-from httpcore import NetworkStream
+from glow import memoize, register_post_import_hook
 from httpx import (
     AsyncByteStream,
     AsyncClient,
@@ -36,23 +35,19 @@ from ._env import env
 
 # --------------------------------- retrying ---------------------------------
 
-_retriable_errors: tuple[type[BaseException], ...] = (
+_retriable_errors: list[type[BaseException]] = [
     TimeoutError,
     urllib.error.HTTPError,
     HTTPError,
+]
+register_post_import_hook(
+    lambda mod: _retriable_errors.append(mod.HTTPError),
+    'requests',
 )
-
-with suppress(ImportError):
-    import requests
-
-    _retriable_errors += (requests.HTTPError,)
-
-with suppress(ImportError):
-    import aiohttp
-
-    _retriable_errors += (aiohttp.ClientError,)
-
-
+register_post_import_hook(
+    lambda mod: _retriable_errors.append(mod.ClientError),
+    'aiohttp',
+)
 logger = logging.getLogger(__name__)
 
 
@@ -101,7 +96,8 @@ class aretry:  # noqa: N801
             stop=stop,
             wait=wait,
             retry=t.retry_if_exception_type(
-                (() if override_defaults else _retriable_errors) + extra_errors
+                (() if override_defaults else tuple(_retriable_errors))
+                + extra_errors
             ),
             before_sleep=warn_immediate_errors,
             reraise=True,
@@ -210,6 +206,7 @@ def guess_name(obj: object) -> str:
     return (f'{mod}.{name}' if mod else name) if name else repr(obj)
 
 
+@memoize()  # Global pool for all HTTP requests
 def _get_transports() -> tuple[HTTPTransport, AsyncHTTPTransport]:
     limits = Limits(
         max_connections=env.MAX_CONNECTIONS,
@@ -226,36 +223,33 @@ def _get_transports() -> tuple[HTTPTransport, AsyncHTTPTransport]:
     return sync, async_
 
 
-# Global pool for all HTTP requests
-_transport, _atransport = _get_transports()
-
-
 def get_clients(
     base_url: Any = '',
     timeout: float | None = None,
     follow_redirects: bool = True,
 ) -> tuple[Client, AsyncClient]:
     base_url = str(base_url)
+    transport, atransport = _get_transports()
     sync = Client(
         timeout=timeout,
         follow_redirects=follow_redirects,
         base_url=base_url,
-        transport=_transport,
+        transport=transport,
     )
     async_ = AsyncClient(
         timeout=timeout,
         follow_redirects=follow_redirects,
         base_url=base_url,
-        transport=_atransport,
+        transport=atransport,
     )
     return sync, async_
 
 
 def get_ip_from_response(resp: Response) -> str | None:
     ns = resp.extensions.get('network_stream')
-    if isinstance(ns, NetworkStream):
-        return ns.get_extra_info('server_addr')
-    return None
+    if ns is None:
+        return None
+    return ns.get_extra_info('server_addr')
 
 
 def raise_for_status(resp: Response) -> asyncio.Future[Response]:
