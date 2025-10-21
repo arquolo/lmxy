@@ -1,6 +1,7 @@
 __all__ = ['Reranker']
 
-from collections.abc import Callable, Iterator
+from asyncio import Future
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 
 from httpx import URL, Request, Response, Timeout
@@ -29,10 +30,6 @@ class Reranker(BaseNodePostprocessor):
     # Outputs
     top_n: int = Field(
         description='Number of nodes to return sorted by score.'
-    )
-    keep_retrieval_score: bool = Field(
-        default=False,
-        description='Whether to keep the retrieval score in metadata.',
     )
 
     # Connection
@@ -69,11 +66,9 @@ class Reranker(BaseNodePostprocessor):
             raise ValueError('Missing query bundle in extra info.')
         if not nodes:
             return nodes
-        with self._event(nodes, query_bundle) as new_nodes:
-            req = self._new_request(nodes, query_bundle)
-            resp = _client.send(req)
-            new_nodes.extend(self._reorder_nodes(nodes, resp)[: self.top_n])
-            return new_nodes
+        with self._query(nodes, query_bundle) as q:
+            q.resp.set_result(_client.send(q.req))
+        return q.nodes
 
     async def _apostprocess_nodes(
         self,
@@ -84,33 +79,38 @@ class Reranker(BaseNodePostprocessor):
             raise ValueError('Missing query bundle in extra info.')
         if not nodes:
             return nodes
-        with self._event(nodes, query_bundle) as new_nodes:
-            req = self._new_request(nodes, query_bundle)
-            resp = await _aclient.send(req)
-            new_nodes.extend(self._reorder_nodes(nodes, resp)[: self.top_n])
-            return new_nodes
+        with self._query(nodes, query_bundle) as q:
+            q.resp.set_result(await _aclient.send(q.req))
+        return q.nodes
 
     @contextmanager
-    def _event(
-        self, nodes: list[NodeWithScore], query_bundle: QueryBundle
-    ) -> Iterator[list[NodeWithScore]]:
+    def _query(
+        self, nodes: Sequence[NodeWithScore], query_bundle: QueryBundle
+    ) -> Iterator['_Query']:
         query = query_bundle.query_str
-
         with self.callback_manager.event(
             CBEventType.RERANKING,
             payload={
-                EventPayload.NODES: nodes,
+                EventPayload.NODES: list(nodes),
                 EventPayload.QUERY_STR: query,
                 EventPayload.TOP_K: self.top_n,
                 EventPayload.MODEL_NAME: self.model_name,
             },
         ) as event:
-            new_nodes: list[NodeWithScore] = []
-            yield new_nodes
-            event.on_end(payload={EventPayload.NODES: nodes})
+            q = _Query(req=self._new_request(nodes, query_bundle))
+            yield q
+
+            resp = q.resp.result()
+            raise_for_status(resp).result()
+
+            rs = _RerankResponse.model_validate_json(resp.content).results
+            q.nodes = [_update_node(nodes[x.index], x.score) for x in rs]
+            if self.top_n:
+                q.nodes = q.nodes[: self.top_n]
+            event.on_end(payload={EventPayload.NODES: q.nodes})
 
     def _new_request(
-        self, nodes: list[NodeWithScore], query_bundle: QueryBundle
+        self, nodes: Sequence[NodeWithScore], query_bundle: QueryBundle
     ) -> Request:
         query = query_bundle.query_str
         texts = [node.get_content(self._metadata_mode) for node in nodes]
@@ -129,21 +129,9 @@ class Reranker(BaseNodePostprocessor):
             extensions={'timeout': Timeout(self.timeout).as_dict()},
         )
 
-    def _reorder_nodes(
-        self, nodes: list[NodeWithScore], resp: Response
-    ) -> list[NodeWithScore]:
-        raise_for_status(resp).result()
-        return [
-            _update_node(nodes[x.index], x.score, self.keep_retrieval_score)
-            for x in _RerankResponse.model_validate_json(resp.content).results
-        ]
 
-
-def _update_node(
-    x: NodeWithScore, score: float, keep_retrieval_score: bool = False
-) -> NodeWithScore:
-    if keep_retrieval_score:
-        x.node.metadata['retrieval_score'] = x.score
+def _update_node(x: NodeWithScore, score: float) -> NodeWithScore:
+    x.node.metadata['retrieval_score'] = x.score
     x.score = score
     return x
 
@@ -155,3 +143,9 @@ class _RerankResult(BaseModel):
 
 class _RerankResponse(BaseModel):
     results: list[_RerankResult]
+
+
+class _Query(BaseModel):
+    req: Request
+    resp: Future[Response] = Field(default_factory=Future)
+    nodes: list[NodeWithScore] = []
