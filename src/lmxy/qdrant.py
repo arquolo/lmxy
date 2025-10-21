@@ -186,17 +186,18 @@ class QdrantVectorStore(BaseModel):
         self._is_legacy = False
 
     async def initialize(self, vector_size: int) -> None:
+        if self._is_initialized:
+            return
         async with _LOCK:
             await self._initialize_unsafe(vector_size)
 
     async def is_initialized(self) -> bool:
+        if self._is_initialized:
+            return True
         async with _LOCK:
             return await self._is_initialized_unsafe()
 
     async def _initialize_unsafe(self, vector_size: int) -> None:
-        if self._is_initialized:
-            return
-
         dense_config = self.dense_config or rest.VectorParams(
             size=vector_size,
             distance=rest.Distance.COSINE,
@@ -255,9 +256,6 @@ class QdrantVectorStore(BaseModel):
         await asyncio.gather(*aws)
 
     async def _is_initialized_unsafe(self) -> bool:
-        if self._is_initialized:
-            return True
-
         if not await self.aclient.collection_exists(self.collection_name):
             return False
         await self._load_models()
@@ -481,6 +479,9 @@ class QdrantVectorStore(BaseModel):
             case _ as unsupported:
                 msg = f'Unsupported query mode: {unsupported}'
                 raise NotImplementedError(msg)
+
+        if not await self.is_initialized():
+            return None, None, 0, alpha
 
         dense_k = q.similarity_top_k
         sparse_k = dense_k if q.sparse_top_k is None else q.sparse_top_k
