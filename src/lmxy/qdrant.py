@@ -75,18 +75,25 @@ def _relative_score_fusion(
     """Fuse dense and sparse results using relative score fusion."""
     if not dense and not sparse:
         return []
-    if not sparse or alpha >= 1:
+    if alpha >= 1:
         return dense
-    if not dense or alpha <= 0:
+    if alpha <= 0:
         return sparse
 
     # Normalize scores
-    dense_scores = {
-        p.id: x for p, x in zip(dense, _min_max([p.score for p in dense]))
-    }
-    sparse_scores = {
-        p.id: x for p, x in zip(sparse, _min_max([p.score for p in sparse]))
-    }
+    if dense:
+        dense = [
+            p.model_copy(update={'score': x})
+            for p, x in zip(dense, _min_max([p.score for p in dense]))
+        ]
+    if sparse:
+        sparse = [
+            p.model_copy(update={'score': x})
+            for p, x in zip(sparse, _min_max([p.score for p in sparse]))
+        ]
+
+    dense_scores = {p.id: p.score for p in dense}
+    sparse_scores = {p.id: p.score for p in sparse}
 
     # Update scores
     scored = (
