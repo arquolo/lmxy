@@ -263,6 +263,8 @@ class QdrantVectorStore(BaseModel):
         await asyncio.gather(*aws)
 
     async def _is_initialized_unsafe(self) -> bool:
+        if self._is_initialized:
+            return True
         if not await self.aclient.collection_exists(self.collection_name):
             return False
         await self._load_models()
