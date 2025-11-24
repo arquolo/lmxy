@@ -18,7 +18,7 @@ from llama_index.utils.huggingface import (
 )
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
-from .util import get_clients, raise_for_status
+from .util import aretry, get_clients, raise_for_status
 
 _endpoints = ['/embed', '/api/embed', '/embeddings', '/v1/embeddings']
 _text_keys = ['input', 'inputs']
@@ -62,6 +62,7 @@ class Embedder(BaseEmbedding):
     timeout: float | None = Field(
         default=360.0, description='HTTP connection timeout'
     )
+    retries: int | None = 10
 
     _instructions: dict[str, str] = PrivateAttr()
     _endpoint: str = PrivateAttr()
@@ -145,13 +146,16 @@ class Embedder(BaseEmbedding):
 
     def _embed(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
-        resp = _client.send(req)
+        resp = self._retry()(_client.send)(req)
         return _handle_response(resp)
 
     async def _aembed(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
-        resp = await _aclient.send(req)
+        resp = await self._retry()(_aclient.send)(req)
         return _handle_response(resp)
+
+    def _retry[**P, R](self) -> Callable[[Callable[P, R]], Callable[P, R]]:
+        return aretry(max_attempts=self.retries, timeout=self.timeout)
 
     def _with_inst(
         self, texts: Sequence[str], mode: Literal['query', 'text']
