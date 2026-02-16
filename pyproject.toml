@@ -10,7 +10,7 @@ name = "lmxy"
 version = "0.3.8"
 description = "Language models extensions"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.15"
 license = {file = "LICENSE"}
 keywords = []
 authors = [
@@ -26,6 +26,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
     "glow~=0.15.4",
@@ -48,6 +49,10 @@ tokenizer = [
     "transformers",
 ]
 fastembed = [
+    # ! requires py-rust-stemmers, which is built only for 3.8-3.13
+    # ! thus for py3.14 you'll need rustup (and msvc for windows).
+    # ! rustup-init could be installed without admin privileges
+    # ! For msvc without admin - use PortableBuildTools
     "fastembed~=0.7.0",
 ]
 openailike = [
