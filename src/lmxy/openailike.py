@@ -13,6 +13,7 @@ from llama_index.core.base.llms.types import (
     CompletionResponse,
     LLMMetadata,
     TextBlock,
+    ImageBlock,
 )
 from llama_index.core.llms.callbacks import (
     llm_chat_callback,
@@ -403,36 +404,52 @@ async def _amap_ctx[T, R](
 
 
 def _to_openai_message_dict(m: ChatMessage) -> 'ChatCompletionMessageParam':
-    txt = ''
+    blocks: list[dict] = []
     for block in m.blocks:
-        if not isinstance(block, TextBlock):
-            msg = f'Unsupported content block type: {type(block).__name__}'
-            raise TypeError(msg)
-        txt += block.text
+        match block:
+            case TextBlock(text=text):
+                blocks.append({'type': 'text', 'text': text})
+            case ImageBlock(image=bytes(b64)):
+                blocks.append(
+                    {
+                        'type': 'image_url',
+                        'image_url': {
+                            'url': f'data:image/png;base64,{b64.decode()}'
+                        },
+                    }
+                )
+            case _:
+                msg = f'Unsupported content block type: {type(block).__name__}'
+                raise TypeError(msg)
 
-    # NOTE: Sending a null value (None) for Tool Message to OpenAI
-    # will cause error
-    # It's only Allowed to send None if it's an Assistant Message and either
-    # a function call or tool calls were performed
-    # Reference: https://platform.openai.com/docs/api-reference/chat/create
-    content = (
-        None
-        if not txt
-        and m.role.value == 'assistant'
-        and (
+    # If all blocks are text, text could become the content.
+    content: list[dict] | str | None
+    if all(b['type'] == 'text' for b in blocks):
+        content = ''.join(b['text'] for b in blocks)
+    else:
+        content = blocks or ''
+
+    role = m.role.value
+    if role in ('assistant', 'tool', 'system'):
+        # NOTE: Despite what the openai docs say,
+        # if the role is ASSISTANT, SYSTEM or TOOL, 'content' must be string.
+        # This will avoid breaking openai-like APIs.
+        if isinstance(content, list):
+            msg = f'Content blocks are not supported for role {role}'
+            raise TypeError(msg)
+
+        # NOTE:
+        # For ASSISTANT we could send `None` for empty content
+        # in case of a function or tool call was performed.
+        # Other roles will die with `None` content.
+        # Reference: https://platform.openai.com/docs/api-reference/chat/create
+        if role == 'assistant' and (
             'function_call' in m.additional_kwargs
             or 'tool_calls' in m.additional_kwargs
-        )
-        else txt
-    )
+        ):
+            content = content or None
 
-    # NOTE: Despite what the openai docs say, if the role is
-    # ASSISTANT, SYSTEM or TOOL,
-    # 'content' cannot be a list and must be string instead.
-    # Furthermore, if all blocks are text blocks,
-    # we can use the content_txt as the content.
-    # This will avoid breaking openai-like APIs.
-    ret = {'role': m.role.value, 'content': content}
+    ret = {'role': role, 'content': content}
 
     # NOTE: openai messages have additional arguments:
     # - function messages have `name`
