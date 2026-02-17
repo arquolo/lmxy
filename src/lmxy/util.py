@@ -70,6 +70,7 @@ class aretry:  # noqa: N801
     def __init__(
         self,
         *extra_errors: type[BaseException],
+        predicate: Callable[[BaseException], bool] | None = None,
         max_attempts: int | None = 10,
         timeout: float | timedelta | None = 45.0,
         wait_initial: float | timedelta = 0.1,
@@ -91,14 +92,27 @@ class aretry:  # noqa: N801
             jitter=wait_jitter,
             exp_base=wait_exp_base,
         )
+        exc_tps = (
+            extra_errors
+            if override_defaults
+            else (*_retriable_errors, *extra_errors)
+        )
+        retry: t.retry_base | None
+        if exc_tps and predicate:
+            retry = t.retry_if_exception(
+                lambda e: isinstance(e, exc_tps) or predicate(e)
+            )
+        elif exc_tps:
+            retry = t.retry_if_exception(lambda e: isinstance(e, exc_tps))
+        elif predicate:
+            retry = t.retry_if_exception(predicate)
+        else:
+            retry = t.retry_never
 
         self.wrap = t.retry(
             stop=stop,
             wait=wait,
-            retry=t.retry_if_exception_type(
-                (() if override_defaults else tuple(_retriable_errors))
-                + extra_errors
-            ),
+            retry=retry,
             before_sleep=warn_immediate_errors,
             reraise=True,
         )

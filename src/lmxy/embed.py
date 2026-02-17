@@ -1,11 +1,14 @@
 __all__ = ['Embedder']
 
+from asyncio import Semaphore as AsyncSemaphore
 from collections.abc import Callable, Sequence
 from typing import Literal
+from threading import Semaphore as SyncSemaphore
 
 from httpx import (
     URL,
     ConnectError,
+    ReadError,
     HTTPStatusError,
     Request,
     Response,
@@ -63,10 +66,13 @@ class Embedder(BaseEmbedding):
         default=360.0, description='HTTP connection timeout'
     )
     retries: int | None = 10
+    concurrency: int = 10
 
     _instructions: dict[str, str] = PrivateAttr()
     _endpoint: str = PrivateAttr()
     _text_key: str = PrivateAttr()
+    _ssemlock: SyncSemaphore = PrivateAttr()
+    _asemlock: AsyncSemaphore = PrivateAttr()
 
     def model_post_init(self, context) -> None:
         self.base_url = self.base_url.removesuffix('/')
@@ -83,6 +89,8 @@ class Embedder(BaseEmbedding):
             'query': self.query_instruction,
         }
         self._endpoint = self._text_key = ''
+        self._ssemlock = SyncSemaphore(self.concurrency)
+        self._asemlock = AsyncSemaphore(self.concurrency)
 
     async def handshake(self) -> None:
         # Try to find working combo
@@ -146,16 +154,32 @@ class Embedder(BaseEmbedding):
 
     def _embed(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
-        resp = self._retry()(_client.send)(req)
-        return _handle_response(resp)
+        return self._retry()(self._send)(req)
 
     async def _aembed(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
-        resp = await self._retry()(_aclient.send)(req)
-        return _handle_response(resp)
+        return await self._retry()(self._asend)(req)
+
+    def _send(self, req: Request) -> list[Embedding]:
+        with self._ssemlock:
+            resp = _client.send(req)
+            return _handle_response(resp)
+
+    async def _asend(self, req: Request) -> list[Embedding]:
+        async with self._asemlock:
+            resp = await _aclient.send(req)
+            return _handle_response(resp)
 
     def _retry[**P, R](self) -> Callable[[Callable[P, R]], Callable[P, R]]:
-        return aretry(max_attempts=self.retries, timeout=self.timeout)
+        return aretry(
+            ReadError,
+            predicate=lambda e: (  # Too many requests
+                isinstance(e, HTTPStatusError)
+                and e.response.status_code == 429
+            ),
+            max_attempts=self.retries,
+            timeout=self.timeout,
+        )
 
     def _with_inst(
         self, texts: Sequence[str], mode: Literal['query', 'text']
