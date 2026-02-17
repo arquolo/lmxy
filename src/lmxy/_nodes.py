@@ -4,6 +4,7 @@ __all__ = [
 ]
 
 from collections.abc import Mapping
+from uuid import UUID
 
 import orjson
 from llama_index.core.schema import (
@@ -53,7 +54,7 @@ def node_to_metadata_dict(node: BaseNode, include_id: bool = False) -> dict:
 
 
 def metadata_dict_to_node(
-    metadata: Mapping, with_id: str | int | None = None
+    metadata: Mapping, with_id: UUID | str | int | None = None
 ) -> BaseNode:
     """Load generic Node from metadata dict."""
     # See: llama_index.core.vector_stores.utils:metadata_dict_to_node
@@ -77,7 +78,7 @@ def metadata_dict_to_node(
     data.pop('class_name', None)
 
     if with_id is not None:
-        data['id_'] = with_id
+        data['id_'] = str(with_id) if isinstance(with_id, UUID) else with_id
 
     if text is not None:
         data['text'] = text

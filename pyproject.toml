@@ -58,7 +58,7 @@ qdrant = [
     "lmxy[base,fastembed]",
     "grpcio",  # transitive
     "orjson",
-    "qdrant-client~=1.15.1",
+    "qdrant-client>=1.15.1,<1.17",
 ]
 bert_score = [
     "tqdm",
