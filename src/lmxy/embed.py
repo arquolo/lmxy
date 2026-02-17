@@ -27,6 +27,13 @@ _endpoints = ['/embed', '/api/embed', '/embeddings', '/v1/embeddings']
 _text_keys = ['input', 'inputs']
 _client, _aclient = get_clients()
 
+
+def _too_many_requests(e: BaseException) -> bool:
+    return isinstance(e, ReadError) or (
+        isinstance(e, HTTPStatusError) and e.response.status_code == 429
+    )
+
+
 # -------------------------------- embedding ---------------------------------
 
 
@@ -100,7 +107,9 @@ class Embedder(BaseEmbedding):
                 # Find whether `input` or `inputs` must be in scheme
                 for self._text_key in _text_keys:
                     try:
-                        await self._aembed(['test line'])
+                        # Raw call, to not retry
+                        req = self._request(['test line'])
+                        await self._asend(req)
                     except HTTPStatusError as exc:
                         if exc.response.status_code == 404:  # Missing url
                             break  # Next `_text_key` will fail too, skip it.
@@ -154,11 +163,11 @@ class Embedder(BaseEmbedding):
 
     def _embed(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
-        return self._retry()(self._send)(req)
+        return self._retry(self._send, req)
 
     async def _aembed(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
-        return await self._retry()(self._asend)(req)
+        return await self._retry(self._asend, req)
 
     def _send(self, req: Request) -> list[Embedding]:
         with self._ssemlock:
@@ -170,16 +179,15 @@ class Embedder(BaseEmbedding):
             resp = await _aclient.send(req)
             return _handle_response(resp)
 
-    def _retry[**P, R](self) -> Callable[[Callable[P, R]], Callable[P, R]]:
-        return aretry(
-            ReadError,
-            predicate=lambda e: (  # Too many requests
-                isinstance(e, HTTPStatusError)
-                and e.response.status_code == 429
-            ),
+    def _retry[**P, R](
+        self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R:
+        fn = aretry(
+            predicate=_too_many_requests,
             max_attempts=self.retries,
             timeout=self.timeout,
-        )
+        )(fn)
+        return fn(*args, **kwargs)
 
     def _with_inst(
         self, texts: Sequence[str], mode: Literal['query', 'text']
