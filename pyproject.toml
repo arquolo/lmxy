@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.3.10"
+version = "0.3.11"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.12, <3.15"
