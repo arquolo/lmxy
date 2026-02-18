@@ -19,6 +19,7 @@ from inspect import iscoroutinefunction
 from types import CodeType, FrameType
 from typing import Any, cast
 
+import httpx
 from tenacity import RetryCallState, retry
 from glow import memoize, register_post_import_hook
 from httpx import (
