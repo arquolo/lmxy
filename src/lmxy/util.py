@@ -1,5 +1,7 @@
 __all__ = [
+    'aclient',
     'aretry',
+    'client',
     'get_clients',
     'get_ip_from_response',
     'raise_for_status',
@@ -17,7 +19,7 @@ from inspect import iscoroutinefunction
 from types import CodeType, FrameType
 from typing import Any, cast
 
-import tenacity as t
+from tenacity import RetryCallState, retry
 from glow import memoize, register_post_import_hook
 from httpx import (
     AsyncByteStream,
@@ -49,6 +51,7 @@ register_post_import_hook(
     lambda mod: _retriable_errors.append(mod.ClientError),
     'aiohttp',
 )
+_inf = float('inf')
 
 
 class aretry:  # noqa: N801
@@ -84,35 +87,23 @@ class aretry:  # noqa: N801
             isinstance(tp, type) and issubclass(tp, BaseException)
             for tp in extra_errors
         )
-
-        stop = _make_stop(max_attempts, timeout)
-        wait = _jittered_backoff_wait(
-            initial=wait_initial,
-            max_backoff=wait_max,
-            jitter=wait_jitter,
-            exp_base=wait_exp_base,
-        )
         exc_tps = (
             extra_errors
             if override_defaults
             else (*_retriable_errors, *extra_errors)
         )
-        retry: t.retry_base | None
-        if exc_tps and predicate:
-            retry = t.retry_if_exception(
-                lambda e: isinstance(e, exc_tps) or predicate(e)
-            )
-        elif exc_tps:
-            retry = t.retry_if_exception(lambda e: isinstance(e, exc_tps))
-        elif predicate:
-            retry = t.retry_if_exception(predicate)
-        else:
-            retry = t.retry_never
-
-        self.wrap = t.retry(
-            stop=stop,
-            wait=wait,
-            retry=retry,
+        self.wrap = retry(
+            stop=_Stop(
+                attempts=max_attempts or _inf,
+                timeout=timeout or _inf,
+            ),
+            wait=_JitteredBackoffWait(
+                initial=wait_initial,
+                max_backoff=wait_max,
+                jitter=wait_jitter,
+                exp_base=wait_exp_base,
+            ),
+            retry=_Retry(exc_tps, predicate),
             before_sleep=warn_immediate_errors,
             reraise=True,
         )
@@ -150,7 +141,7 @@ def _declutter_tb(e: BaseException, code: CodeType) -> None:
         tb = tb.tb_next
 
 
-def warn_immediate_errors(rcs: t.RetryCallState) -> None:
+def warn_immediate_errors(rcs: RetryCallState) -> None:
     if (
         rcs.next_action
         and rcs.outcome
@@ -169,46 +160,62 @@ def warn_immediate_errors(rcs: t.RetryCallState) -> None:
         )
 
 
-def _make_stop(
-    attempts: int | None, timeout: float | timedelta | None
-) -> Callable[[t.RetryCallState], bool]:
-    # See stamina._core:_make_stop
-    if attempts and timeout:
-        return t.stop_any(
-            t.stop_after_attempt(attempts),
-            t.stop_after_delay(timeout),
+class _Stop:  # See stamina._core:_make_stop
+    def __init__(
+        self,
+        attempts: float | int = 10,
+        timeout: float | timedelta = 45,
+    ) -> None:
+        self.attempts = attempts
+        self.timeout = _to_seconds(timeout)
+
+    def __call__(self, rcs: RetryCallState) -> bool:
+        assert rcs.seconds_since_start is not None
+        return (
+            rcs.attempt_number >= self.attempts
+            or rcs.seconds_since_start >= self.timeout
         )
 
-    if attempts:
-        return t.stop_after_attempt(attempts)
 
-    if timeout:
-        return t.stop_after_delay(timeout)
+class _JitteredBackoffWait:  # See stamina._core:_compute_backoff
+    def __init__(
+        self,
+        initial: float | timedelta = 0.1,
+        max_backoff: float | timedelta = 5.0,
+        jitter: float | timedelta = 1.0,
+        exp_base: float = 2.0,
+    ) -> None:
+        self.initial = _to_seconds(initial)
+        self.max_backoff = _to_seconds(max_backoff)
+        self.jitter = _to_seconds(jitter)
+        self.exp_base = exp_base
+        self.rng = random.Random()
 
-    return t.stop_never
-
-
-def _jittered_backoff_wait(
-    initial: float | timedelta = 0.1,
-    max_backoff: float | timedelta = 5.0,
-    jitter: float | timedelta = 1.0,
-    exp_base: float = 2.0,
-) -> Callable[[t.RetryCallState], float]:
-    # See stamina._core:_compute_backoff
-    initial = _to_seconds(initial)
-    max_backoff = _to_seconds(max_backoff)
-    jitter = _to_seconds(jitter)
-    rng = random.Random()
-
-    def wait(rcs: t.RetryCallState) -> float:
+    def __call__(self, rcs: RetryCallState) -> float:
         num = rcs.attempt_number - 1
-        jitter_ = rng.uniform(0, jitter) if jitter else 0
+        jitter = self.rng.uniform(0, self.jitter) if self.jitter else 0
         return min(
-            max_backoff,
-            initial * (exp_base**num) + jitter_,
+            self.max_backoff,
+            self.initial * (self.exp_base**num) + jitter,
         )
 
-    return wait
+
+class _Retry:
+    def __init__(
+        self,
+        exc_types: tuple[type[BaseException], ...],
+        predicate: Callable[[BaseException], bool] | None,
+    ) -> None:
+        self.exc_types = exc_types
+        self.predicate = predicate
+
+    def __call__(self, rcs: RetryCallState) -> bool:
+        assert rcs.outcome is not None
+        ex = rcs.outcome.exception()
+        return ex is not None and (
+            isinstance(ex, self.exc_types)
+            or (self.predicate(ex) if self.predicate else False)
+        )
 
 
 def _to_seconds(x: float | timedelta) -> float:
@@ -311,3 +318,5 @@ _ERROR_TYPES = {
     4: 'Client error',
     5: 'Server error',
 }
+
+client, aclient = get_clients()

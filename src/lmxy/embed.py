@@ -23,11 +23,10 @@ from llama_index.utils.huggingface import (
 )
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
-from .util import aretry, get_clients, raise_for_status
+from .util import aretry, client, aclient, raise_for_status
 
 _endpoints = ['/embed', '/api/embed', '/embeddings', '/v1/embeddings']
 _text_keys = ['input', 'inputs']
-_client, _aclient = get_clients()
 
 
 def _too_many_requests(e: BaseException) -> bool:
@@ -77,8 +76,8 @@ class Embedder(BaseEmbedding):
     retries: int | None = 10
     concurrency: int = 10
 
-    client: Client | None = None
-    aclient: AsyncClient | None = None
+    client: Client = client
+    aclient: AsyncClient = aclient
 
     _instructions: dict[str, str] = PrivateAttr()
     _endpoint: str = PrivateAttr()
@@ -176,12 +175,12 @@ class Embedder(BaseEmbedding):
 
     def _send(self, req: Request) -> list[Embedding]:
         with self._ssemlock:
-            resp = (self.client or _client).send(req)
+            resp = self.client.send(req)
             return _handle_response(resp)
 
     async def _asend(self, req: Request) -> list[Embedding]:
         async with self._asemlock:
-            resp = await (self.aclient or _aclient).send(req)
+            resp = await self.aclient.send(req)
             return _handle_response(resp)
 
     def _retry[**P, R](

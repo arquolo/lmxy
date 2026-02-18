@@ -10,9 +10,7 @@ from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.schema import MetadataMode, NodeWithScore, QueryBundle
 from pydantic import BaseModel, Field, PrivateAttr
 
-from .util import get_clients, raise_for_status
-
-_client, _aclient = get_clients()
+from .util import aclient, client, raise_for_status
 
 
 class Reranker(BaseNodePostprocessor):
@@ -48,8 +46,8 @@ class Reranker(BaseNodePostprocessor):
     )
     # TODO: support caching (by node ID)
 
-    client: Client | None = None
-    aclient: AsyncClient | None = None
+    client: Client = client
+    aclient: AsyncClient = aclient
 
     def model_post_init(self, context) -> None:
         self._metadata_mode = (
@@ -70,7 +68,7 @@ class Reranker(BaseNodePostprocessor):
         if not nodes:
             return nodes
         with self._query(nodes, query_bundle) as q:
-            q.resp.set_result((self.client or _client).send(q.req))
+            q.resp.set_result(self.client.send(q.req))
         return q.nodes
 
     async def _apostprocess_nodes(
@@ -83,7 +81,7 @@ class Reranker(BaseNodePostprocessor):
         if not nodes:
             return nodes
         with self._query(nodes, query_bundle) as q:
-            q.resp.set_result(await (self.aclient or _aclient).send(q.req))
+            q.resp.set_result(await self.aclient.send(q.req))
         return q.nodes
 
     @contextmanager
