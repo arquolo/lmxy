@@ -39,8 +39,6 @@ if TYPE_CHECKING:
 
 type _QueryResponse = Sequence[tuple['BaseNode', float]]
 
-_DENSE_NAME = 'text-dense'
-_SPARSE_NAME = 'text-sparse'
 _SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, rest.Modifier.IDF)
 _LOCK = asyncio.Lock()
 logger = logging.getLogger(__name__)
@@ -153,6 +151,10 @@ class QdrantVectorStore(BaseModel):
     # Hybrid search fusion
     hybrid_fusion_fn: HybridFuse = _relative_score_fusion
 
+    # Field names
+    dense_field_name: str = 'text-dense'
+    sparse_field_name: str = 'text-sparse'
+
     _update: Callable[
         [Sequence['BaseNode | str']],
         Awaitable[Sequence[str]],
@@ -209,14 +211,14 @@ class QdrantVectorStore(BaseModel):
             size=vector_size,
             distance=rest.Distance.COSINE,
         )
-        vectors_config = {_DENSE_NAME: dense_config}
+        vectors_config = {self.dense_field_name: dense_config}
 
         await self._load_models()
         if self.sparse_query_fn and self.sparse_doc_fn:
             sparse_config = self.sparse_config or rest.SparseVectorParams(
                 modifier=_SPARSE_MODIFIERS.get(self.sparse_model or '')
             )
-            sparse_vectors_config = {_SPARSE_NAME: sparse_config}
+            sparse_vectors_config = {self.sparse_field_name: sparse_config}
         else:
             sparse_vectors_config = None
 
@@ -278,14 +280,14 @@ class QdrantVectorStore(BaseModel):
                 self.collection_name,
             )
             self._is_legacy = True
-        elif isinstance(dense, dict) and _DENSE_NAME in dense:
+        elif isinstance(dense, dict) and self.dense_field_name in dense:
             self._is_legacy = False
         else:
             msg = f'Bad vector config {dense}'
             raise TypeError(msg)
 
         sparse = info.config.params.sparse_vectors
-        if isinstance(sparse, dict) and _SPARSE_NAME in sparse:
+        if isinstance(sparse, dict) and self.sparse_field_name in sparse:
             if not self.sparse_query_fn:
                 logger.warning(
                     'Collection %s support '
@@ -348,7 +350,10 @@ class QdrantVectorStore(BaseModel):
             if self._is_legacy:
                 vector = demb
             else:
-                vecs = {_DENSE_NAME: demb, _SPARSE_NAME: semb}
+                vecs = {
+                    self.dense_field_name: demb,
+                    self.sparse_field_name: semb,
+                }
                 vector = {k: v for k, v in vecs.items() if v is not None}
             if not vector:
                 raise ValueError('Embedding is not set')
@@ -384,7 +389,9 @@ class QdrantVectorStore(BaseModel):
             records = await self.qretrieve(
                 query.node_ids, with_payload=with_payload
             )
-            return _parse_query_results(records)
+            return _parse_query_results(
+                records, dense_field_name=self.dense_field_name
+            )
 
         dq, sq, hybrid_k, alpha = await self._parse_query(
             query, similarity=dense_threshold
@@ -397,7 +404,9 @@ class QdrantVectorStore(BaseModel):
             filters=qdrant_filters,
             with_payload=with_payload,
         )
-        return _parse_query_results(points)
+        return _parse_query_results(
+            points, dense_field_name=self.dense_field_name
+        )
 
     async def qretrieve(
         self,
@@ -441,7 +450,7 @@ class QdrantVectorStore(BaseModel):
             reqs.append(
                 rest.QueryRequest(
                     query=dq.vector,
-                    using=None if self._is_legacy else _DENSE_NAME,
+                    using=None if self._is_legacy else self.dense_field_name,
                     filter=filters,
                     score_threshold=dq.threshold,
                     limit=dq.limit,
@@ -456,7 +465,7 @@ class QdrantVectorStore(BaseModel):
             reqs.append(
                 rest.QueryRequest(
                     query=sq.vector,
-                    using=_SPARSE_NAME,
+                    using=self.sparse_field_name,
                     filter=filters,
                     limit=sq.limit,
                     with_payload=with_payload,
@@ -726,6 +735,7 @@ def _meta_to_condition(f: 'MetadataFilter') -> rest.Condition | None:
 
 def _parse_query_results(
     points: Iterable[rest.Record | rest.ScoredPoint],
+    dense_field_name: str = 'text-dense',
 ) -> '_QueryResponse':
     scored: list[tuple[BaseNode, float]] = []
 
@@ -738,7 +748,7 @@ def _parse_query_results(
             if isinstance(vecs, list):
                 node.embedding = vecs  # type: ignore[assignment]
             elif isinstance(vecs, dict) and (
-                isinstance(vec := vecs.get(_DENSE_NAME), list)
+                isinstance(vec := vecs.get(dense_field_name), list)
                 or isinstance(vec := vecs.get(''), list)
             ):
                 node.embedding = vec  # type: ignore[assignment]
