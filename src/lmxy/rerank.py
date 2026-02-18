@@ -4,7 +4,7 @@ from asyncio import Future
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 
-from httpx import URL, Request, Response, Timeout
+from httpx import URL, Request, Response, Timeout, Client, AsyncClient
 from llama_index.core.callbacks import CBEventType, EventPayload
 from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from llama_index.core.schema import MetadataMode, NodeWithScore, QueryBundle
@@ -48,6 +48,9 @@ class Reranker(BaseNodePostprocessor):
     )
     # TODO: support caching (by node ID)
 
+    client: Client | None = None
+    aclient: AsyncClient | None = None
+
     def model_post_init(self, context) -> None:
         self._metadata_mode = (
             MetadataMode.EMBED if self.with_meta else MetadataMode.NONE
@@ -67,7 +70,7 @@ class Reranker(BaseNodePostprocessor):
         if not nodes:
             return nodes
         with self._query(nodes, query_bundle) as q:
-            q.resp.set_result(_client.send(q.req))
+            q.resp.set_result((self.client or _client).send(q.req))
         return q.nodes
 
     async def _apostprocess_nodes(
@@ -80,7 +83,7 @@ class Reranker(BaseNodePostprocessor):
         if not nodes:
             return nodes
         with self._query(nodes, query_bundle) as q:
-            q.resp.set_result(await _aclient.send(q.req))
+            q.resp.set_result(await (self.aclient or _aclient).send(q.req))
         return q.nodes
 
     @contextmanager

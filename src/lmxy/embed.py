@@ -6,6 +6,8 @@ from typing import Literal
 from threading import Semaphore as SyncSemaphore
 
 from httpx import (
+    Client,
+    AsyncClient,
     URL,
     ConnectError,
     ReadError,
@@ -74,6 +76,9 @@ class Embedder(BaseEmbedding):
     )
     retries: int | None = 10
     concurrency: int = 10
+
+    client: Client | None = None
+    aclient: AsyncClient | None = None
 
     _instructions: dict[str, str] = PrivateAttr()
     _endpoint: str = PrivateAttr()
@@ -171,12 +176,12 @@ class Embedder(BaseEmbedding):
 
     def _send(self, req: Request) -> list[Embedding]:
         with self._ssemlock:
-            resp = _client.send(req)
+            resp = (self.client or _client).send(req)
             return _handle_response(resp)
 
     async def _asend(self, req: Request) -> list[Embedding]:
         async with self._asemlock:
-            resp = await _aclient.send(req)
+            resp = await (self.aclient or _aclient).send(req)
             return _handle_response(resp)
 
     def _retry[**P, R](

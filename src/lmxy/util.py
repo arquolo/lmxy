@@ -224,7 +224,7 @@ def guess_name(obj: object) -> str:
 
 
 @memoize()  # Global pool for all HTTP requests
-def _get_transports() -> tuple[HTTPTransport, AsyncHTTPTransport]:
+def _get_transports() -> tuple[httpx.BaseTransport, httpx.AsyncBaseTransport]:
     limits = Limits(
         max_connections=env.MAX_CONNECTIONS,
         max_keepalive_connections=env.MAX_KEEP_ALIVE_CONNECTIONS,
