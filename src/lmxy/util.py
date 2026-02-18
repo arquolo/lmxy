@@ -235,14 +235,19 @@ def _get_transports() -> tuple[httpx.BaseTransport, httpx.AsyncBaseTransport]:
     limits = Limits(
         max_connections=env.MAX_CONNECTIONS,
         max_keepalive_connections=env.MAX_KEEP_ALIVE_CONNECTIONS,
+        keepalive_expiry=env.KEEP_ALIVE_TIMEOUT,
     )
 
     # Use SSL_CERT_FILE envvar to pass `cafile`
     sync = HTTPTransport(
-        verify=env.SSL_VERIFY, limits=limits, retries=env.RETRIES
+        verify=env.SSL_VERIFY,
+        limits=limits,
+        retries=env.RETRIES,
     )
     async_ = AsyncHTTPTransport(
-        verify=env.SSL_VERIFY, limits=limits, retries=env.RETRIES
+        verify=env.SSL_VERIFY,
+        limits=limits,
+        retries=env.RETRIES,
     )
     return sync, async_
 
