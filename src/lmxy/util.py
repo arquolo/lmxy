@@ -22,27 +22,18 @@ from typing import Any, cast
 import httpx
 from tenacity import RetryCallState, retry
 from glow import memoize, register_post_import_hook
-from httpx import (
-    AsyncByteStream,
-    AsyncClient,
-    AsyncHTTPTransport,
-    Client,
-    HTTPError,
-    HTTPStatusError,
-    HTTPTransport,
-    Limits,
-    Response,
-)
 from loguru import logger
 
 from ._env import env
 
 # --------------------------------- retrying ---------------------------------
 
+_FutureResponse = asyncio.Future[httpx.Response]
+
 _retriable_errors: list[type[BaseException]] = [
     TimeoutError,
     urllib.error.HTTPError,
-    HTTPError,
+    httpx.HTTPError,
 ]
 register_post_import_hook(
     lambda mod: _retriable_errors.append(mod.HTTPError),
@@ -231,21 +222,24 @@ def guess_name(obj: object) -> str:
     return (f'{mod}.{name}' if mod else name) if name else repr(obj)
 
 
+# ------------------------------ httpx clients -------------------------------
+
+
 @memoize()  # Global pool for all HTTP requests
 def _get_transports() -> tuple[httpx.BaseTransport, httpx.AsyncBaseTransport]:
-    limits = Limits(
+    limits = httpx.Limits(
         max_connections=env.MAX_CONNECTIONS,
         max_keepalive_connections=env.MAX_KEEP_ALIVE_CONNECTIONS,
         keepalive_expiry=env.KEEP_ALIVE_TIMEOUT,
     )
 
     # Use SSL_CERT_FILE envvar to pass `cafile`
-    sync = HTTPTransport(
+    sync = httpx.HTTPTransport(
         verify=env.SSL_VERIFY,
         limits=limits,
         retries=env.RETRIES,
     )
-    async_ = AsyncHTTPTransport(
+    async_ = httpx.AsyncHTTPTransport(
         verify=env.SSL_VERIFY,
         limits=limits,
         retries=env.RETRIES,
@@ -257,16 +251,16 @@ def get_clients(
     base_url: Any = '',
     timeout: float | None = None,
     follow_redirects: bool = True,
-) -> tuple[Client, AsyncClient]:
+) -> tuple[httpx.Client, httpx.AsyncClient]:
     base_url = str(base_url)
     transport, atransport = _get_transports()
-    sync = Client(
+    sync = httpx.Client(
         timeout=timeout,
         follow_redirects=follow_redirects,
         base_url=base_url,
         transport=transport,
     )
-    async_ = AsyncClient(
+    async_ = httpx.AsyncClient(
         timeout=timeout,
         follow_redirects=follow_redirects,
         base_url=base_url,
@@ -275,14 +269,14 @@ def get_clients(
     return sync, async_
 
 
-def get_ip_from_response(resp: Response) -> str | None:
+def get_ip_from_response(resp: httpx.Response) -> str | None:
     ns = resp.extensions.get('network_stream')
     if ns is None:
         return None
     return ns.get_extra_info('server_addr')
 
 
-def raise_for_status(resp: Response) -> asyncio.Future[Response]:
+def raise_for_status(resp: httpx.Response) -> _FutureResponse:
     """Raise status error if one occured.
 
     Adds more context to `Response.raise_for_status` (like response content).
@@ -290,32 +284,34 @@ def raise_for_status(resp: Response) -> asyncio.Future[Response]:
     For async response - DON'T FORGET to `await` first.
     """
     if resp.is_success:
-        f = asyncio.Future[Response]()
+        f = _FutureResponse()
         f.set_result(resp)
         return f
 
     # closed response or any synchronous response
-    if resp.is_closed or not isinstance(resp.stream, AsyncByteStream):
-        f = asyncio.Future[Response]()
+    if resp.is_closed or not isinstance(resp.stream, httpx.AsyncByteStream):
+        f = _FutureResponse()
         f.set_exception(_new_status_error(resp, resp.read()))
         return f
 
     # opened asynchronous response
-    async def _fail() -> Response:
+    async def _fail() -> httpx.Response:
         exc = _new_status_error(resp, await resp.aread())
         raise exc from None
 
     return asyncio.ensure_future(_fail())
 
 
-def _new_status_error(resp: Response, content: bytes) -> HTTPStatusError:
+def _new_status_error(
+    resp: httpx.Response, content: bytes
+) -> httpx.HTTPStatusError:
     status_cls = resp.status_code // 100
     error_type = _ERROR_TYPES.get(status_cls, 'Invalid status code')
     message = (
         f"{error_type} '{resp.status_code} {resp.reason_phrase}' "
         f"for url '{resp.url}' failed with {content.decode()}"
     )
-    return HTTPStatusError(message, request=resp.request, response=resp)
+    return httpx.HTTPStatusError(message, request=resp.request, response=resp)
 
 
 _ERROR_TYPES = {
