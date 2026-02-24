@@ -96,6 +96,8 @@ class Reranker:
 
 
 class QueryNodeSimilarityEvaluator(BaseModel):
+    model_config = {'arbitrary_types_allowed': True}
+
     # Inputs and behavior
     model_name: str = Field(
         description='The name of the reranker model.',
