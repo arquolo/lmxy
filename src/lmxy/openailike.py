@@ -171,8 +171,8 @@ class OpenAiLike(FunctionCallingLLM):
     ) -> CompletionResponse:
         """Complete the prompt."""
         kws = self._get_kwds(prompt=prompt, formatted=formatted, **kwargs)
-        resp = self._client.completions.create(stream=False, **kws)
-        return _Decoder().completion(resp)
+        rsp = self._client.completions.create(stream=False, **kws)
+        return _Decoder().completion(rsp)
 
     @llm_completion_callback()
     @_llm_retry
@@ -181,8 +181,8 @@ class OpenAiLike(FunctionCallingLLM):
     ) -> CompletionResponse:
         """Complete the prompt."""
         kws = self._get_kwds(prompt=prompt, formatted=formatted, **kwargs)
-        resp = await self._aclient.completions.create(stream=False, **kws)
-        return _Decoder().completion(resp)
+        rsp = await self._aclient.completions.create(stream=False, **kws)
+        return _Decoder().completion(rsp)
 
     @llm_completion_callback()
     @_llm_retry  # NOTE: Stream breaks are on caller's side
@@ -209,8 +209,8 @@ class OpenAiLike(FunctionCallingLLM):
     def chat(self, messages: Sequence[ChatMessage], **kwargs) -> ChatResponse:
         """Chat with the model."""
         kws = self._get_kwds(messages=messages, **kwargs)
-        resp = self._client.chat.completions.create(stream=False, **kws)
-        return _Decoder().chat(resp)
+        rsp = self._client.chat.completions.create(stream=False, **kws)
+        return _Decoder().chat(rsp)
 
     @llm_chat_callback()
     @_llm_retry
@@ -219,8 +219,8 @@ class OpenAiLike(FunctionCallingLLM):
     ) -> ChatResponse:
         """Chat with the model."""
         kws = self._get_kwds(messages=messages, **kwargs)
-        resp = await self._aclient.chat.completions.create(stream=False, **kws)
-        return _Decoder().chat(resp)
+        rsp = await self._aclient.chat.completions.create(stream=False, **kws)
+        return _Decoder().chat(rsp)
 
     @llm_chat_callback()
     @_llm_retry  # NOTE: Stream breaks are on caller's side
@@ -391,16 +391,16 @@ class OpenAiLike(FunctionCallingLLM):
 
 def _map_ctx[T, R](s: Stream[T], fn: Callable[[T], R]) -> Generator[R]:
     with s:
-        for resp in s:
-            yield fn(resp)
+        for rsp in s:
+            yield fn(rsp)
 
 
 async def _amap_ctx[T, R](
     s: AsyncStream[T], fn: Callable[[T], R]
 ) -> AsyncGenerator[R]:
     async with s:
-        async for resp in s:
-            yield fn(resp)
+        async for rsp in s:
+            yield fn(rsp)
 
 
 def _to_openai_message_dict(m: ChatMessage) -> 'ChatCompletionMessageParam':

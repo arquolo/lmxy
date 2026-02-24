@@ -175,13 +175,13 @@ class Embedder(BaseEmbedding):
 
     def _send(self, req: Request) -> list[Embedding]:
         with self._ssemlock:
-            resp = self.client.send(req)
-            return _handle_response(resp)
+            rsp = self.client.send(req)
+            return _handle_response(rsp)
 
     async def _asend(self, req: Request) -> list[Embedding]:
         async with self._asemlock:
-            resp = await self.aclient.send(req)
-            return _handle_response(resp)
+            rsp = await self.aclient.send(req)
+            return _handle_response(rsp)
 
     def _retry[**P, R](
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs

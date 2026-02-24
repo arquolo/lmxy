@@ -486,49 +486,49 @@ def get_clients(
     return sync, async_
 
 
-def get_ip_from_response(resp: httpx.Response) -> str | None:
-    ns = resp.extensions.get('network_stream')
+def get_ip_from_response(rsp: httpx.Response, /) -> str | None:
+    ns = rsp.extensions.get('network_stream')
     if ns is None:
         return None
     return ns.get_extra_info('server_addr')
 
 
-def raise_for_status(resp: httpx.Response) -> _FutureResponse:
+def raise_for_status(rsp: httpx.Response, /) -> _FutureResponse:
     """Raise status error if one occured.
 
     Adds more context to `Response.raise_for_status` (like response content).
     For sync response - call `.result()` on returned value first.
     For async response - DON'T FORGET to `await` first.
     """
-    if resp.is_success:
+    if rsp.is_success:
         f = _FutureResponse()
-        f.set_result(resp)
+        f.set_result(rsp)
         return f
 
     # closed response or any synchronous response
-    if resp.is_closed or not isinstance(resp.stream, httpx.AsyncByteStream):
+    if rsp.is_closed or not isinstance(rsp.stream, httpx.AsyncByteStream):
         f = _FutureResponse()
-        f.set_exception(_new_status_error(resp, resp.read()))
+        f.set_exception(_new_status_error(rsp, rsp.read()))
         return f
 
     # opened asynchronous response
     async def _fail() -> httpx.Response:
-        exc = _new_status_error(resp, await resp.aread())
+        exc = _new_status_error(rsp, await rsp.aread())
         raise exc from None
 
     return asyncio.ensure_future(_fail())
 
 
 def _new_status_error(
-    resp: httpx.Response, content: bytes
+    rsp: httpx.Response, content: bytes
 ) -> httpx.HTTPStatusError:
-    status_cls = resp.status_code // 100
+    status_cls = rsp.status_code // 100
     error_type = _ERROR_TYPES.get(status_cls, 'Invalid status code')
     message = (
-        f"{error_type} '{resp.status_code} {resp.reason_phrase}' "
-        f"for url '{resp.url}' failed with {content.decode()}"
+        f"{error_type} '{rsp.status_code} {rsp.reason_phrase}' "
+        f"for url '{rsp.url}' failed with {content.decode()}"
     )
-    return httpx.HTTPStatusError(message, request=resp.request, response=resp)
+    return httpx.HTTPStatusError(message, request=rsp.request, response=rsp)
 
 
 _ERROR_TYPES = {
