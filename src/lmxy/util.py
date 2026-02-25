@@ -331,16 +331,11 @@ class _RetryMiddleware:
     async def __call__(
         self, req: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType
     ) -> aiohttp.ClientResponse:
-        rsp = await handler(req)
-        if rsp.status not in _HTTP_RETRY_CODES:
-            return rsp
-
-        for _ in range(self.attempts):  # Try more
+        for _ in range(self.attempts):  # Try N extra times for non-retry code
             rsp = await handler(req)
             if rsp.status not in _HTTP_RETRY_CODES:
                 return rsp
-
-        return rsp
+        return await handler(req)  # Final unconditional attempt
 
 
 class _AiohttpResponseStream(httpx.AsyncByteStream):

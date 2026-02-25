@@ -297,34 +297,30 @@ class OpenAiLike(FunctionCallingLLM):
         **kwargs,
     ) -> dict[str, Any]:
         """Predict and call the tool."""
-        tool_specs = [
-            tool.metadata.to_openai_tool(skip_length_check=True)
-            for tool in tools
-        ]
-
-        if self.metadata.is_function_calling_model:
-            for tool_spec in tool_specs:
-                if tool_spec['type'] == 'function':
-                    tool_spec['function']['strict'] = False
-                    tool_spec['function']['parameters'][
-                        'additionalProperties'
-                    ] = False
-
         messages = chat_history or []
-
         if user_msg is not None:
             if isinstance(user_msg, str):
                 user_msg = ChatMessage(content=user_msg)
             messages.append(user_msg)
 
+        tool_specs = tool_choice = None
+        if tools:
+            tool_specs = []
+            for tool in tools:
+                s = tool.metadata.to_openai_tool(skip_length_check=True)
+                if (
+                    self.metadata.is_function_calling_model
+                    and s['type'] == 'function'
+                ):
+                    s['function']['strict'] = False
+                    s['function']['parameters']['additionalProperties'] = False
+                tool_specs.append(s)
+            tool_choice = 'required' if tool_required else 'auto'
+
         return {
             'messages': messages,
-            'tools': tool_specs or None,
-            'tool_choice': (
-                ('required' if tool_required else 'auto')
-                if tool_specs
-                else None
-            ),
+            'tools': tool_specs,
+            'tool_choice': tool_choice,
             **kwargs,
         }
 
@@ -526,12 +522,9 @@ def _update_tool_calls(
     # information across multiple chunks where
     # some fields may be None in
     # initial chunks and populated in subsequent ones
-    if func.arguments is None:
-        func.arguments = ''
-    if func.name is None:
-        func.name = ''
-    if t.id is None:
-        t.id = ''
+    func.arguments = func.arguments or ''
+    func.name = func.name or ''
+    t.id = t.id or ''
 
     # Update with delta values
     func.arguments += tc_delta.function.arguments or ''
