@@ -1,7 +1,8 @@
-__all__ = ['no_think']
+__all__ = ['no_think', 'trim_repetitions_at_end', 'wordify']
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, AsyncIterable
+import string
 
 _THINK_START = '<think>'
 _THINK_STOP = '</think>'
@@ -19,7 +20,7 @@ _NEXT_STATE = [  # answering -> (not answering, next tag, next tag part)
 ]
 
 
-def no_think[S: AsyncIterator[str] | str](s: S) -> S:
+def no_think[S: AsyncIterable[str] | str](s: S) -> S:
     """Remove <think>...</think> blocks and dedent output."""
     if isinstance(s, str):
         txt = _THOUGHT.sub('', s)
@@ -30,11 +31,11 @@ def no_think[S: AsyncIterator[str] | str](s: S) -> S:
     return _astrip(_ahide_think(s))  # type: ignore[return-value]
 
 
-async def _ahide_think(s: AsyncIterator[str]) -> AsyncIterator[str]:
+async def _ahide_think(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
     """Remove `<think>...</think>` blocks."""
     buf = ''
     answering, tag, partial_tag = _NEXT_STATE[False]
-    async for token in s:
+    async for token in tokens:
         if not token:  # Skip empty tokens
             continue
         buf += token
@@ -54,22 +55,23 @@ async def _ahide_think(s: AsyncIterator[str]) -> AsyncIterator[str]:
         yield buf
 
 
-async def _astrip(s: AsyncIterator[str]) -> AsyncIterator[str]:
+async def _astrip(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
     """Strip chunked line.
 
     - Skips leading and trailing whitespaces and line breaks
     - Trims trailing whitespaces from all lines
     - Keeps at most 2 consecutive empty lines
     """
+    tokens_iter = aiter(tokens)
     buf = ''
-    async for tok in s:
+    async for tok in tokens_iter:
         buf += tok
         buf = buf.lstrip('\n ')  # Remove leading spaces and line breaks
         if buf:
             break  # Got initial data
 
     num_breaks = 0
-    async for tok in s:
+    async for tok in tokens_iter:
         buf += tok
         out, buf, num_breaks = _astrip_step(buf, num_breaks)
         if out:
@@ -98,3 +100,63 @@ def _astrip_step(buf: str, num_breaks: int) -> tuple[str, str, int]:
         buf = buf[pos:]
 
     return out, buf, num_breaks
+
+
+async def wordify(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
+    """Repack stream of tokens with splits on words and punctuation"""
+    punkt = string.punctuation + ' '
+    pat = re.compile(r'\w+|\s+|[^\w\s]')
+    tail = ''
+    async for tok in tokens:
+        pts = pat.findall(tok)
+        if not pts:
+            continue
+
+        if pts[0].strip() and pts[0] not in punkt:
+            pts[0] = tail + pts[0]
+        elif tail:
+            pts = [tail, *pts]
+
+        for p in pts[:-1]:
+            yield p
+
+        if pts[-1].strip() and pts[-1] not in punkt:
+            tail = pts[-1]
+        else:
+            yield pts[-1]
+            tail = ''
+
+    if tail:
+        yield tail
+
+
+async def trim_repetitions_at_end[T](
+    tokens: AsyncIterable[T],
+    min_window: int = 10,
+    max_window: int = 40,
+) -> AsyncIterator[T]:
+    """Finds repetitions of token sequence and cuts on it.
+
+    TODO: optimize for large window sizes. Now it's big O(n w^2).
+    """
+    assert 0 < min_window < max_window
+    buf: list[T] = []
+
+    async for tok in tokens:  # O(n w^2)
+        buf.append(tok)
+
+        while len(buf) >= 2 * max_window:
+            yield buf.pop(0)
+
+        cuts = (  # O(w^2), maybe we could optimize it to O(w) via DP?
+            n
+            for n in range(len(buf) // 2, min_window - 1, -1)
+            if buf[-n * 2 : -n] == buf[-n:]
+        )
+        max_cut = next(cuts, -1)
+        if max_cut > 0:  # Found duplicate, stop consumption of iterator
+            buf = buf[:-max_cut]
+            break
+
+    for tok in buf:  # Finalize
+        yield tok
