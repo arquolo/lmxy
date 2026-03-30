@@ -1,7 +1,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from ._parsers import no_think
+from ._parsers import no_think, wordify, trim_repetitions_at_end
 from ._queue import MulticastQueue
 from ._types import (
     LlmFunction,
@@ -59,5 +59,7 @@ __all__ = [
     'get_sparse_encoder',
     'get_tokenizer',
     'no_think',
+    'trim_repetitions_at_end',
     'unpack_response',
+    'wordify',
 ]
