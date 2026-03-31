@@ -1,8 +1,8 @@
 __all__ = ['no_think', 'trim_repetitions_at_end', 'wordify']
 
 import re
-from collections.abc import AsyncIterator, AsyncIterable
 import string
+from collections.abc import AsyncIterator, AsyncIterable, Sequence
 
 _THINK_START = '<think>'
 _THINK_STOP = '</think>'
@@ -18,6 +18,8 @@ _NEXT_STATE = [  # answering -> (not answering, next tag, next tag part)
     (True, _THINK_START, _TAG_CUT[_THINK_START]),
     (False, _THINK_STOP, _TAG_CUT[_THINK_STOP]),
 ]
+_PUNKT = string.punctuation + ' '
+_WORDS_N_PUNKT = re.compile(r'\w+|\s+|[^\w\s]')
 
 
 def no_think[S: AsyncIterable[str] | str](s: S) -> S:
@@ -104,15 +106,13 @@ def _astrip_step(buf: str, num_breaks: int) -> tuple[str, str, int]:
 
 async def wordify(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
     """Repack stream of tokens with splits on words and punctuation"""
-    punkt = string.punctuation + ' '
-    pat = re.compile(r'\w+|\s+|[^\w\s]')
     tail = ''
     async for tok in tokens:
-        pts = pat.findall(tok)
+        pts = _WORDS_N_PUNKT.findall(tok)
         if not pts:
             continue
 
-        if pts[0].strip() and pts[0] not in punkt:
+        if pts[0].strip() and pts[0] not in _PUNKT:
             pts[0] = tail + pts[0]
         elif tail:
             pts = [tail, *pts]
@@ -120,7 +120,7 @@ async def wordify(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
         for p in pts[:-1]:
             yield p
 
-        if pts[-1].strip() and pts[-1] not in punkt:
+        if pts[-1].strip() and pts[-1] not in _PUNKT:
             tail = pts[-1]
         else:
             yield pts[-1]
@@ -139,7 +139,7 @@ async def trim_repetitions_at_end[T](
 
     TODO: optimize for large window sizes. Now it's big O(n w^2).
     """
-    assert 0 < min_window < max_window
+    assert 0 < min_window <= max_window
     buf: list[T] = []
 
     async for tok in tokens:  # O(n w^2)
@@ -160,3 +160,24 @@ async def trim_repetitions_at_end[T](
 
     for tok in buf:  # Finalize
         yield tok
+
+
+def trim_repetitions_at_end_[T](
+    s: Sequence[T],
+    min_window: int = 1,
+    max_window: int = 10,
+    threshold: int = 40,
+) -> Sequence[T]:
+    assert 1 <= min_window <= max_window
+    slen = len(s)
+    cut = -1
+    for window in range(
+        min(min_window, slen // 2),
+        min(max_window, slen // 2) + 1,
+    ):
+        ref = s[-window:]
+        for i in range(window, slen - window + 1, window):
+            if s[-i - window : -i] != ref:
+                break
+            cut = max(cut, i)
+    return s[:-cut] if cut >= threshold else s
