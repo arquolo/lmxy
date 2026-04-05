@@ -1,7 +1,7 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from ._parsers import no_think, wordify, trim_repetitions_at_end
+from ._parsers import glue_reps, no_think, trim_repetitions_at_end, wordify
 from ._queue import MulticastQueue
 from ._types import (
     LlmFunction,
@@ -58,6 +58,7 @@ __all__ = [
     'VectorStore',
     'get_sparse_encoder',
     'get_tokenizer',
+    'glue_reps',
     'no_think',
     'trim_repetitions_at_end',
     'unpack_response',

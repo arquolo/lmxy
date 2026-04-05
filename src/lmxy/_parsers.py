@@ -1,4 +1,4 @@
-__all__ = ['no_think', 'trim_repetitions_at_end', 'wordify']
+__all__ = ['glue_reps', 'no_think', 'trim_repetitions_at_end', 'wordify']
 
 import re
 import string
@@ -128,6 +128,23 @@ async def wordify(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
 
     if tail:
         yield tail
+
+
+async def glue_reps(tks: AsyncIterable[str]) -> AsyncIterable[str]:
+    """Join consecutive alphanumerics or duplicate punctuation chars"""
+    buf = ''
+    async for tk in tks:
+        if not tk:
+            continue
+        if not buf:
+            buf = tk
+        elif (buf.isalnum() and tk.isalnum()) or (buf[-1] == tk[0]):
+            buf += tk
+        else:
+            yield buf
+            buf = tk
+    if buf:
+        yield buf
 
 
 async def trim_repetitions_at_end[T](
