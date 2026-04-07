@@ -136,13 +136,10 @@ async def glue_reps(tks: AsyncIterable[str]) -> AsyncIterable[str]:
     async for tk in tks:
         if not tk:
             continue
-        if not buf:
-            buf = tk
-        elif (buf.isalnum() and tk.isalnum()) or (buf[-1] == tk[0]):
-            buf += tk
-        else:
+        if buf and not (buf.isalnum() and tk.isalnum()) and (buf[-1] != tk[0]):
             yield buf
-            buf = tk
+            buf = ''
+        buf += tk
     if buf:
         yield buf
 
