@@ -1,7 +1,7 @@
 __all__ = ['MulticastQueue']
 
 from asyncio import CancelledError, Future
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from typing import Literal, Self
 from weakref import finalize
 
@@ -59,7 +59,7 @@ class MulticastQueue[T]:
             if self._state == 'closed':  # Finished
                 raise IndexError
 
-            await _step(wakeup=self._putters, wait_for=self._getters)
+            await _step(None, wakeup=self._putters, wait_for=self._getters)
 
         return self._buf[idx]
 
@@ -84,7 +84,7 @@ class MulticastQueue[T]:
             raise QueueShutdownError
 
         self._buf.append(value)
-        await _step(wakeup=self._getters, wait_for=self._putters)
+        await _step(None, wakeup=self._getters, wait_for=self._putters)
 
     # ------------------------------- private --------------------------------
 
@@ -127,23 +127,27 @@ class _QueueIterator[T]:
             return value
 
 
-async def _step(
-    wakeup: set[Future[None]],
-    wait_for: set[Future[None]],
-) -> None:
-    # Release blocked
-    for f in wakeup:
-        if not f.done():
-            f.set_result(None)
+async def _step[T](
+    value: T, /, *, wakeup: Iterable[Future[T]], wait_for: set[Future[T]]
+) -> T:
+    _wakeup(wakeup, value)
+    return await _wait_for(wait_for)
 
-    # Acquire to block
-    f = Future[None]()
-    wait_for.add(f)
+
+def _wakeup[T](fs: Iterable[Future[T]], value: T) -> None:
+    for f in fs:
+        if not f.done():
+            f.set_result(value)  # Release blocked
+
+
+async def _wait_for[T](fs: set[Future[T]]) -> T:
+    f = Future[T]()
+    fs.add(f)
     try:
-        await f
+        return await f  # Acquire to block
     finally:
         f.cancel()
-        wait_for.discard(f)
+        fs.discard(f)
 
 
 def _cancel_all(waiters: set[Future], msg: str | None = None) -> None:

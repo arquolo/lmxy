@@ -508,8 +508,7 @@ def raise_for_status(rsp: httpx.Response, /) -> _FutureResponse:
 
     # opened asynchronous response
     async def _fail() -> httpx.Response:
-        exc = _new_status_error(rsp, await rsp.aread())
-        raise exc from None
+        raise _new_status_error(rsp, await rsp.aread()) from None
 
     return asyncio.ensure_future(_fail())
 

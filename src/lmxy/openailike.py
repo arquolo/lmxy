@@ -332,11 +332,11 @@ class OpenAiLike(FunctionCallingLLM):
         **kwargs,
     ) -> ChatResponse:
         """Validate the response from chat_with_tools."""
-        if not allow_parallel_tool_calls:
-            additional_kwargs = response.message.additional_kwargs
-            tool_calls = additional_kwargs.get('tool_calls', [])
-            if len(tool_calls) > 1:
-                additional_kwargs['tool_calls'] = [tool_calls[0]]
+        if allow_parallel_tool_calls:
+            return response
+        kwds = response.message.additional_kwargs
+        if calls := kwds.get('tool_calls', []):
+            kwds['tool_calls'] = calls[:1]
         return response
 
     def get_tool_calls_from_response(
@@ -346,40 +346,32 @@ class OpenAiLike(FunctionCallingLLM):
         **kwargs,
     ) -> list[ToolSelection]:
         """Predict and call the tool."""
-        tool_calls = response.message.additional_kwargs.get('tool_calls', [])
+        calls = response.message.additional_kwargs.get('tool_calls', [])
 
-        if len(tool_calls) < 1:
+        if not calls:
             if error_on_no_tool_call:
-                msg = (
-                    'Expected at least one tool call, '
-                    f'but got {len(tool_calls)} tool calls.'
-                )
-                raise ValueError(msg)
+                raise ValueError('Expected at least one tool call')
             return []
 
-        tool_selections = []
-        for tool_call in tool_calls:
-            if tool_call.type != 'function':
-                msg = 'Invalid tool type. Unsupported by OpenAI llm'
-                raise ValueError(msg)
-
-            func = tool_call.function
+        selections = []
+        for call in calls:
+            if call.type != 'function':
+                raise ValueError('Tool type is not supported by OpenAI LLM')
+            fn = call.function
 
             # this should handle both complete and partial jsons
             try:
-                argument_dict = parse_partial_json(func.arguments)
+                kwds = parse_partial_json(fn.arguments)
             except (ValueError, TypeError, JSONDecodeError):
-                argument_dict = {}
+                kwds = {}
 
-            tool_selections.append(
+            selections.append(
                 ToolSelection(
-                    tool_id=tool_call.id,
-                    tool_name=func.name,
-                    tool_kwargs=argument_dict,
+                    tool_id=call.id, tool_name=fn.name, tool_kwargs=kwds
                 )
             )
 
-        return tool_selections
+        return selections
 
 
 # -------------------------------- low level ---------------------------------

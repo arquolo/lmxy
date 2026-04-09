@@ -217,13 +217,12 @@ class Embedder(BaseEmbedding):
 
 def _handle_response(response: Response) -> list[Embedding]:
     data = raise_for_status(response).result().content
-    obj = _parse_embeddings(data)
-    match obj:
-        case _OllamaResponse():
+    match _parse_embeddings(data):
+        case _OllamaResponse() as obj:
             return obj.embeddings
-        case _OpenAiResponse():
+        case _OpenAiResponse() as obj:
             return [x.embedding for x in obj.data]
-        case _:
+        case _ as obj:
             return obj
 
 

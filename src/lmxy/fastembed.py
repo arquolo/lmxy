@@ -16,13 +16,13 @@ def get_sparse_encoder(
     if env.HF_HUB_OFFLINE or env.TRANSFORMERS_OFFLINE:
         kwargs['local_files_only'] = True
 
-    # prioritize GPU over CPU
     try:
-        model = SparseTextEmbedding(
-            model_name, providers=['CUDAExecutionProvider'], **kwargs
-        )
-    # If provider is not available, fallback to CPU
+        # Prioritize GPU over CPU
+        kwargs['providers'] = ['CUDAExecutionProvider']
+        model = SparseTextEmbedding(model_name, **kwargs)
     except Exception:  # noqa: BLE001
+        # If not available, fallback to CPU
+        kwargs['providers'] = None
         model = SparseTextEmbedding(model_name, **kwargs)
 
     def encode(texts: Iterable[str]) -> BatchSparseEncoding:

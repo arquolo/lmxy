@@ -29,13 +29,22 @@ async def unpack_response[**P](
     if isinstance(ret, AsyncIterator | str):
         return ret, []
 
-    obj: BaseModel | AsyncIterator[str] | str | None
+    obj: AsyncIterator[str] | str
     match ret:
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
         # Synthesizer.(a)synthesize if output_cls is set
-        case AgentChatResponse() | Response() | PydanticResponse():
-            obj = ret.response
+        case Response(response=None) | PydanticResponse(response=None):
+            obj = ''
+
+        # Chat.(a)chat
+        # Synthesizer.(a)synthesize
+        case AgentChatResponse(response=obj) | Response(response=str(obj)):
+            pass
+
+        # Synthesizer.(a)synthesize if output_cls is set
+        case PydanticResponse(response=BaseModel() as resp):
+            obj = resp.model_dump_json()
 
         # Synthesizer(stream=True).asynthesize
         case AsyncStreamingResponse():
@@ -48,10 +57,5 @@ async def unpack_response[**P](
         case _:
             msg = f'Unsupported type: {type(ret)}'
             raise NotImplementedError(msg)
-
-    if obj is None:
-        obj = ''
-    if isinstance(obj, BaseModel):
-        obj = obj.model_dump_json()
 
     return obj, ret.source_nodes
