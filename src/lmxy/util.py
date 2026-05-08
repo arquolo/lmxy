@@ -18,14 +18,14 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
-from types import CodeType, FrameType
+from types import FrameType
 from typing import Any, cast
 from urllib.parse import unquote
 
 import aiohttp
 import httpx
 from tenacity import RetryCallState, retry
-from glow import memoize, register_post_import_hook
+from glow import memoize, register_post_import_hook, declutter_tb
 from loguru import logger
 from yarl import URL
 
@@ -109,30 +109,19 @@ class aretry:  # noqa: N801
             try:
                 return await wrapped_f(*args, **kwargs)  # type: ignore[misc]
             except BaseException as exc:
-                _declutter_tb(exc, f.__code__)
+                declutter_tb(exc, f.__code__)
                 raise
 
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             try:
                 return wrapped_f(*args, **kwargs)
             except BaseException as exc:
-                _declutter_tb(exc, f.__code__)
+                declutter_tb(exc, f.__code__)
                 raise
 
         if iscoroutinefunction(f):
             return update_wrapper(cast('Callable[P, R]', async_wrapper), f)
         return update_wrapper(wrapper, f)
-
-
-def _declutter_tb(e: BaseException, code: CodeType) -> None:
-    tb = e.__traceback__
-
-    # Drop frames until `code` frame is reached
-    while tb:
-        if tb.tb_frame.f_code is code:
-            e.__traceback__ = tb
-            return
-        tb = tb.tb_next
 
 
 def warn_immediate_errors(rcs: RetryCallState) -> None:

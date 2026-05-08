@@ -6,7 +6,7 @@ __all__ = [
 from collections.abc import Mapping
 from uuid import UUID
 
-import orjson
+from pydantic_core import from_json, to_json
 from llama_index.core.schema import (
     BaseNode,
     ImageNode,
@@ -48,7 +48,7 @@ def node_to_metadata_dict(node: BaseNode, include_id: bool = False) -> dict:
 
     return metadata | {
         # dump remainder of node_dict to json string
-        '_node_content': orjson.dumps(node_dict).decode(),
+        '_node_content': to_json(node_dict).decode(),
         '_node_type': node.class_name(),
     }
 
@@ -73,7 +73,7 @@ def metadata_dict_to_node(
     mut.pop('document_id', None)
     # mut.pop('doc_id', None)
 
-    data = orjson.loads(node_json)
+    data = from_json(node_json)
     data.setdefault('metadata', mut)
     data.pop('class_name', None)
 
