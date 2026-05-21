@@ -1,17 +1,18 @@
 __all__ = ['Embedder']
 
 from asyncio import Semaphore as AsyncSemaphore
-from collections.abc import Callable, Sequence
-from typing import Literal
+from collections.abc import Awaitable, Callable, Sequence
 from threading import Semaphore as SyncSemaphore
+from typing import Literal
 
+from glow import astreaming, streaming
 from httpx import (
-    Client,
-    AsyncClient,
     URL,
+    AsyncClient,
+    Client,
     ConnectError,
-    ReadError,
     HTTPStatusError,
+    ReadError,
     Request,
     Response,
     Timeout,
@@ -23,7 +24,7 @@ from llama_index.utils.huggingface import (
 )
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
-from .util import aretry, client, aclient, raise_for_status
+from .util import aclient, aretry, client, raise_for_status
 
 _endpoints = ['/embed', '/api/embed', '/embeddings', '/v1/embeddings']
 _text_keys = ['input', 'inputs']
@@ -75,6 +76,7 @@ class Embedder(BaseEmbedding):
     )
     retries: int | None = 10
     concurrency: int = 10
+    latency: float = 0  # >0 to enable automatic batching
 
     client: Client = client
     aclient: AsyncClient = aclient
@@ -84,6 +86,8 @@ class Embedder(BaseEmbedding):
     _text_key: str = PrivateAttr()
     _ssemlock: SyncSemaphore = PrivateAttr()
     _asemlock: AsyncSemaphore = PrivateAttr()
+    _embed: Callable[[Sequence[str]], Sequence[Embedding]]
+    _aembed: Callable[[Sequence[str]], Awaitable[Sequence[Embedding]]]
 
     def model_post_init(self, context) -> None:
         if self.retries is not None:
@@ -104,6 +108,22 @@ class Embedder(BaseEmbedding):
         self._endpoint = self._text_key = ''
         self._ssemlock = SyncSemaphore(self.concurrency)
         self._asemlock = AsyncSemaphore(self.concurrency)
+
+        if self.latency > 0:
+            self._embed = streaming(
+                self._embed_impl,
+                batch_size=self.embed_batch_size,
+                timeout=self.latency,
+                pool_timeout=self.timeout or 360,
+            )
+            self._aembed = astreaming(
+                self._aembed_impl,
+                batch_size=self.embed_batch_size,
+                timeout=self.latency,
+            )
+        else:
+            self._embed = self._embed_impl
+            self._aembed = self._aembed_impl
 
     async def handshake(self) -> None:
         # Try to find working combo
@@ -148,7 +168,7 @@ class Embedder(BaseEmbedding):
     def _get_text_embeddings(self, texts: Sequence[str]) -> list[Embedding]:
         """Get text embeddings."""
         texts = self._with_inst(texts, mode='text')
-        return self._embed(texts)
+        return list(self._embed(texts))
 
     async def _aget_query_embedding(self, query: str) -> Embedding:
         """Get query embedding async."""
@@ -165,13 +185,13 @@ class Embedder(BaseEmbedding):
     ) -> list[Embedding]:
         """Get text embeddings async."""
         texts = self._with_inst(texts, mode='text')
-        return await self._aembed(texts)
+        return list(await self._aembed(texts))
 
-    def _embed(self, texts: Sequence[str]) -> list[Embedding]:
+    def _embed_impl(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
         return self._retry(self._send, req)
 
-    async def _aembed(self, texts: Sequence[str]) -> list[Embedding]:
+    async def _aembed_impl(self, texts: Sequence[str]) -> list[Embedding]:
         req = self._request(texts)
         return await self._retry(self._asend, req)
 
