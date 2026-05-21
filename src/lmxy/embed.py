@@ -115,6 +115,7 @@ class Embedder(BaseEmbedding):
                 batch_size=self.embed_batch_size,
                 timeout=self.latency,
                 pool_timeout=self.timeout or 360,
+                workers=self.concurrency,
             )
             self._aembed = astreaming(
                 self._aembed_impl,
