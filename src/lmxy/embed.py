@@ -86,6 +86,8 @@ class Embedder(BaseEmbedding):
     _asemlock: AsyncSemaphore = PrivateAttr()
 
     def model_post_init(self, context) -> None:
+        if self.retries is not None:
+            self.retries = max(self.retries, 0)
         self.base_url = self.base_url.removesuffix('/')
         if self.text_instruction is None:
             self.text_instruction = get_text_instruct_for_model_name(
@@ -188,7 +190,7 @@ class Embedder(BaseEmbedding):
     ) -> R:
         fn = aretry(
             predicate=_too_many_requests,
-            max_attempts=self.retries,
+            max_attempts=None if self.retries is None else 1 + self.retries,
             timeout=self.timeout,
         )(fn)
         return fn(*args, **kwargs)

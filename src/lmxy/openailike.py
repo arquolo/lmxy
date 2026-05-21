@@ -53,13 +53,13 @@ _errors = (
 
 def _llm_retry[**P, R](f: Callable[P, R]) -> Callable[P, R]:
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        max_retries = getattr(args[0], 'max_retries', 0)
-        if max_retries <= 0:
+        retries = getattr(args[0], 'retries', 0)
+        if retries <= 0:
             return f(*args, **kwargs)
 
         r = aretry(
             *_errors,
-            max_attempts=max_retries,
+            max_attempts=1 + retries,
             timeout=60,
             wait_max=20,
         )
@@ -116,7 +116,7 @@ class OpenAiLike(FunctionCallingLLM):
     default_headers: dict[str, str] | None = Field(
         default=None, description='The default headers for API requests.'
     )
-    max_retries: int = Field(
+    retries: int = Field(
         default=3, description='The maximum number of API retries.', ge=0
     )
     timeout: float | None = Field(
@@ -135,7 +135,7 @@ class OpenAiLike(FunctionCallingLLM):
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
-            max_retries=self.max_retries,
+            max_retries=self.retries,
             default_headers=self.default_headers,
             http_client=self.http_client,
         )
@@ -143,7 +143,7 @@ class OpenAiLike(FunctionCallingLLM):
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout,
-            max_retries=self.max_retries,
+            max_retries=self.retries,
             default_headers=self.default_headers,
             http_client=self.async_http_client,
         )

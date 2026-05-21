@@ -146,7 +146,7 @@ def warn_immediate_errors(rcs: RetryCallState) -> None:
 class _Stop:  # See stamina._core:_make_stop
     def __init__(
         self,
-        attempts: float | int = 10,
+        attempts: float = 10,
         timeout: float | timedelta = 45,
     ) -> None:
         self.attempts = attempts
@@ -314,13 +314,13 @@ class AiohttpTransport(httpx.AsyncBaseTransport):
 
 
 class _RetryMiddleware:
-    def __init__(self, attempts: int = 0) -> None:
-        self.attempts = attempts
+    def __init__(self, retries: int = 0) -> None:
+        self.retries = retries
 
     async def __call__(
         self, req: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType
     ) -> aiohttp.ClientResponse:
-        for _ in range(self.attempts):  # Try N extra times for non-retry code
+        for _ in range(self.retries):  # Try N extra times for non-retry code
             rsp = await handler(req)
             if rsp.status not in _HTTP_RETRY_CODES:
                 return rsp

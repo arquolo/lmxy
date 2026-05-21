@@ -131,7 +131,7 @@ class QdrantVectorStore(BaseModel):
     upsert_batch_size: int | None = 64
     query_timeout: float | None = None  # enable to batch upserts
     query_batch_size: int | None = 64
-    max_retries: int = 3
+    retries: int | None = 3  # None = retry forever
 
     # Collection construction parameters
     dense_config: rest.VectorParams | None = None
@@ -168,10 +168,12 @@ class QdrantVectorStore(BaseModel):
     _is_legacy: bool = PrivateAttr()
 
     def model_post_init(self, context) -> None:
+        if self.retries is not None:
+            self.retries = max(self.retries, 0)
         retry_ = aretry(
             RpcError,
             UnexpectedResponse,
-            max_attempts=self.max_retries,
+            max_attempts=None if self.retries is None else 1 + self.retries,
         )
         update = self._ll_update
         if self.upsert_timeout is not None:
