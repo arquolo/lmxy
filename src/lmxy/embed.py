@@ -86,8 +86,10 @@ class Embedder(BaseEmbedding):
     _text_key: str = PrivateAttr()
     _ssemlock: SyncSemaphore = PrivateAttr()
     _asemlock: AsyncSemaphore = PrivateAttr()
-    _embed: Callable[[Sequence[str]], Sequence[Embedding]]
-    _aembed: Callable[[Sequence[str]], Awaitable[Sequence[Embedding]]]
+    _embed: Callable[[Sequence[str]], Sequence[Embedding]] = PrivateAttr()
+    _aembed: Callable[[Sequence[str]], Awaitable[Sequence[Embedding]]] = (
+        PrivateAttr()
+    )
 
     def model_post_init(self, context) -> None:
         if self.retries is not None:
