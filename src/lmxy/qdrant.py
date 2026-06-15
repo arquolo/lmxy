@@ -8,14 +8,7 @@ __all__ = [
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    NamedTuple,
-    Protocol,
-    cast,
-    runtime_checkable,
-)
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 
 from glow import astreaming
 from grpc import RpcError
@@ -31,23 +24,18 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 from ._nodes import metadata_dict_to_node, node_to_metadata_dict
 from ._types import SparseEncode
 from .fastembed import get_sparse_encoder
-from .util import aretry
+from .util import aretry, min_max
 
 if TYPE_CHECKING:
     from llama_index.core.schema import BaseNode
     from llama_index.core.vector_stores import MetadataFilter, VectorStoreQuery
 
-type _QueryResponse = Sequence[tuple['BaseNode', float]]
+type _ScoredNode = tuple['BaseNode', float]
+type _QueryPayload = tuple[list[float] | rest.SparseVector, int, float | None]
 
 _SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, rest.Modifier.IDF)
 _LOCK = asyncio.Lock()
 logger = logging.getLogger(__name__)
-
-
-class _QueryData(NamedTuple):
-    vector: list[float] | rest.SparseVector
-    limit: int
-    threshold: float | None = None
 
 
 @runtime_checkable
@@ -82,12 +70,12 @@ def _relative_score_fusion(
     if dense:
         dense = [
             p.model_copy(update={'score': x})
-            for p, x in zip(dense, _min_max([p.score for p in dense]))
+            for p, x in zip(dense, min_max([p.score for p in dense]))
         ]
     if sparse:
         sparse = [
             p.model_copy(update={'score': x})
-            for p, x in zip(sparse, _min_max([p.score for p in sparse]))
+            for p, x in zip(sparse, min_max([p.score for p in sparse]))
         ]
 
     dense_scores = {p.id: p.score for p in dense}
@@ -134,8 +122,10 @@ class QdrantVectorStore(BaseModel):
     retries: int | None = 3  # None = retry forever
 
     # Collection construction parameters
-    dense_config: rest.VectorParams | None = None
-    sparse_config: rest.SparseVectorParams | None = None
+    dense_config: rest.VectorParams = rest.VectorParams(
+        size=0, distance=rest.Distance.COSINE
+    )
+    sparse_config: rest.SparseVectorParams = rest.SparseVectorParams()
     shard_number: int | None = None
     hnsw_config: rest.HnswConfigDiff | None = None
     optimizers_config: rest.OptimizersConfigDiff | None = None
@@ -165,7 +155,6 @@ class QdrantVectorStore(BaseModel):
     ] = PrivateAttr()
 
     _is_initialized: bool = PrivateAttr()
-    _is_legacy: bool = PrivateAttr()
 
     def model_post_init(self, context) -> None:
         if self.retries is not None:
@@ -193,8 +182,9 @@ class QdrantVectorStore(BaseModel):
             )
         self._query = retry_(query)
 
+        modifier = _SPARSE_MODIFIERS.get(self.sparse_model or '')
+        self.sparse_config.modifier = modifier
         self._is_initialized = False
-        self._is_legacy = False
 
     async def initialize(self, vector_size: int) -> None:
         if self._is_initialized:
@@ -209,26 +199,24 @@ class QdrantVectorStore(BaseModel):
             return await self._is_initialized_unsafe()
 
     async def _initialize_unsafe(self, vector_size: int) -> None:
-        dense_config = self.dense_config or rest.VectorParams(
-            size=vector_size,
-            distance=rest.Distance.COSINE,
-        )
-        vectors_config = {self.dense_field_name: dense_config}
-
         await self._load_models()
-        if self.sparse_query_fn and self.sparse_doc_fn:
-            sparse_config = self.sparse_config or rest.SparseVectorParams(
-                modifier=_SPARSE_MODIFIERS.get(self.sparse_model or '')
+
+        self.dense_config.size = self.dense_config.size or vector_size
+        if vector_size != self.dense_config.size:
+            raise ValueError(
+                f'Invalid vector size {vector_size} '
+                f'for dense config {self.dense_config}'
             )
-            sparse_vectors_config = {self.sparse_field_name: sparse_config}
-        else:
-            sparse_vectors_config = None
 
         try:
             await self.aclient.create_collection(
                 self.collection_name,
-                vectors_config=vectors_config,
-                sparse_vectors_config=sparse_vectors_config,
+                vectors_config={self.dense_field_name: self.dense_config},
+                sparse_vectors_config=(
+                    {self.sparse_field_name: self.sparse_config}
+                    if self.sparse_query_fn and self.sparse_doc_fn
+                    else None
+                ),
                 shard_number=self.shard_number,
                 hnsw_config=self.hnsw_config,
                 optimizers_config=self.optimizers_config,
@@ -275,17 +263,12 @@ class QdrantVectorStore(BaseModel):
         info = await self.aclient.get_collection(self.collection_name)
 
         dense = info.config.params.vectors
-        if isinstance(dense, rest.VectorParams):
-            logger.warning(
-                'Collection %s is using legacy anonymous vectors. '
-                'Recreate it to allow sparse/hybrid search',
-                self.collection_name,
+        if not isinstance(dense, dict):
+            msg = (
+                f'Collection {self.collection_name} is using '
+                'legacy anonymous vectors. '
+                'Recreate it to allow sparse/hybrid search'
             )
-            self._is_legacy = True
-        elif isinstance(dense, dict) and self.dense_field_name in dense:
-            self._is_legacy = False
-        else:
-            msg = f'Bad vector config {dense}'
             raise TypeError(msg)
 
         sparse = info.config.params.sparse_vectors
@@ -338,25 +321,19 @@ class QdrantVectorStore(BaseModel):
         sparse_embeddings: Sequence[rest.SparseVector | None]
         if self.sparse_doc_fn:
             sparse_embeddings = await _aembed_sparse(
+                self.sparse_doc_fn,
                 *(n.get_content(MetadataMode.EMBED) for n in nodes),
-                fn=self.sparse_doc_fn,
             )
         else:
             sparse_embeddings = [None for _ in nodes]
 
         points: list[rest.PointStruct] = []
         for node, semb in zip(nodes, sparse_embeddings, strict=True):
-            demb = node.embedding
-
-            vector: rest.VectorStruct | None
-            if self._is_legacy:
-                vector = demb
-            else:
-                vecs = {
-                    self.dense_field_name: demb,
-                    self.sparse_field_name: semb,
-                }
-                vector = {k: v for k, v in vecs.items() if v is not None}
+            vector: rest.VectorStruct = {}
+            if demb := node.embedding:
+                vector[self.dense_field_name] = demb
+            if semb is not None:
+                vector[self.sparse_field_name] = semb
             if not vector:
                 raise ValueError('Embedding is not set')
 
@@ -375,7 +352,7 @@ class QdrantVectorStore(BaseModel):
         qdrant_filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
         dense_threshold: float | None = None,
-    ) -> '_QueryResponse':
+    ) -> Sequence[_ScoredNode]:
         """Query index for top k most similar nodes."""
         #  NOTE: users can pass in qdrant_filters
         # (nested/complicated filters) to override the default MetadataFilters
@@ -395,14 +372,11 @@ class QdrantVectorStore(BaseModel):
                 records, dense_field_name=self.dense_field_name
             )
 
-        dq, sq, hybrid_k, alpha = await self._parse_query(
-            query, similarity=dense_threshold
-        )
+        qs, hybrid_k, alpha = await self._parse_query(query, dense_threshold)
         points = await self.qquery(
+            qs,
             alpha=alpha,
             hybrid_k=hybrid_k,
-            dq=dq,
-            sq=sq,
             filters=qdrant_filters,
             with_payload=with_payload,
         )
@@ -423,13 +397,14 @@ class QdrantVectorStore(BaseModel):
 
     async def qquery(
         self,
+        queries: dict[str, _QueryPayload],
         alpha: float,
         hybrid_k: int = 0,
-        dq: _QueryData | None = None,
-        sq: _QueryData | None = None,
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
     ) -> Sequence[rest.Record | rest.ScoredPoint]:
+        if not queries:
+            return []
         if not await self.is_initialized():
             return []
 
@@ -444,39 +419,17 @@ class QdrantVectorStore(BaseModel):
 
         if isinstance(with_payload, Sequence):
             with_payload = list(with_payload)
-
-        reqs: list[rest.QueryRequest] = []
-        if dq:
-            # Dense scores are absolute, i.e. depend only on (query, node),
-            # thus we can apply some globally fixed score threshold.
-            reqs.append(
-                rest.QueryRequest(
-                    query=dq.vector,
-                    using=None if self._is_legacy else self.dense_field_name,
-                    filter=filters,
-                    score_threshold=dq.threshold,
-                    limit=dq.limit,
-                    with_payload=with_payload,
-                )
+        reqs = [
+            rest.QueryRequest(
+                query=q,
+                using=using,
+                filter=filters,
+                score_threshold=threshold,
+                limit=limit,
+                with_payload=with_payload,
             )
-
-        if sq:
-            # Sparse scores are computed relative to the whole candidate list,
-            # so we cannot threshold them,
-            # and only able to directly limit their count.
-            reqs.append(
-                rest.QueryRequest(
-                    query=sq.vector,
-                    using=self.sparse_field_name,
-                    filter=filters,
-                    limit=sq.limit,
-                    with_payload=with_payload,
-                )
-            )
-
-        if not reqs:
-            return []
-
+            for using, (q, limit, threshold) in queries.items()
+        ]
         results = await self._query(reqs)
         if len(results) != 2:  # (dense) or (sparse)
             return results[0]
@@ -487,8 +440,8 @@ class QdrantVectorStore(BaseModel):
         return self.hybrid_fusion_fn(*results, alpha=alpha, top_k=hybrid_k)
 
     async def _parse_query(
-        self, q: 'VectorStoreQuery', similarity: float | None = None
-    ) -> tuple[_QueryData | None, _QueryData | None, int, float]:
+        self, q: 'VectorStoreQuery', dense_threshold: float | None = None
+    ) -> tuple[dict[str, _QueryPayload], int, float]:
         match q.mode.value:
             case 'default':
                 alpha = 1.0
@@ -501,7 +454,7 @@ class QdrantVectorStore(BaseModel):
                 raise NotImplementedError(msg)
 
         if not await self.is_initialized():
-            return None, None, 0, alpha
+            return {}, 0, alpha
 
         dense_k = q.similarity_top_k
         sparse_k = dense_k if q.sparse_top_k is None else q.sparse_top_k
@@ -516,8 +469,23 @@ class QdrantVectorStore(BaseModel):
         # `hybrid_k` is effective only up to `dense_k+sparse_k`
         hybrid_k = min(hybrid_k, dense_k + sparse_k)
 
-        dense = sparse = None
+        queries: dict[str, _QueryPayload] = {}
 
+        # Dense scores are absolute, i.e. depend only on (query, node),
+        # thus we can apply some globally fixed score threshold.
+        if alpha > 0 and dense_k:
+            if not q.query_embedding:
+                msg = '`query_embedding` is required for dense queries'
+                raise ValueError(msg)
+            queries[self.dense_field_name] = (
+                q.query_embedding,
+                dense_k,
+                dense_threshold,
+            )
+
+        # Sparse scores are computed relative to the whole candidate list,
+        # so we cannot threshold them,
+        # and only able to directly limit their count.
         if alpha < 1 and sparse_k:
             if not self.sparse_query_fn:
                 msg = (
@@ -527,24 +495,15 @@ class QdrantVectorStore(BaseModel):
                     'to allow sparse/hybrid search'
                 )
                 raise ValueError(msg)
-
             if not q.query_str:
                 msg = '`query_str` is required for sparse queries'
                 raise ValueError(msg)
-
-            [sparse_embedding] = await _aembed_sparse(
-                q.query_str, fn=self.sparse_query_fn
+            [sparse_e] = await _aembed_sparse(
+                self.sparse_query_fn, q.query_str
             )
-            sparse = _QueryData(sparse_embedding, sparse_k)
+            queries[self.sparse_field_name] = (sparse_e, sparse_k, None)
 
-        if alpha > 0 and dense_k:
-            if not q.query_embedding:
-                msg = '`query_embedding` is required for dense queries'
-                raise ValueError(msg)
-
-            dense = _QueryData(q.query_embedding, dense_k, similarity)
-
-        return dense, sparse, hybrid_k, alpha
+        return queries, hybrid_k, alpha
 
     # CRUD: delete
     async def adelete(self, ref_doc_id: str) -> None:
@@ -571,14 +530,18 @@ class QdrantVectorStore(BaseModel):
     async def _ll_update(
         self, nodes: Sequence['BaseNode | str'], /
     ) -> Sequence[str]:
-        ids = [n if isinstance(n, str) else n.id_ for n in nodes]
-
         # Merge and deduplicate updates & deletions
-        updates = dict(
-            (n, None) if isinstance(n, str) else (n.id_, n) for n in nodes
-        )
-        add_nodes = [n for n in updates.values() if n is not None]
-        rm_ids = [id_ for id_, n in updates.items() if n is None]
+        ids: list[str] = []
+        add_nodes: list[BaseNode] = []
+        rm_ids: list[str] = []
+        for n in nodes:
+            if isinstance(n, str):
+                ids.append(n)
+                rm_ids.append(n)
+            else:
+                ids.append(n.id_)
+                add_nodes.append(n)
+        add_nodes = list({n.id_: n for n in add_nodes}.values())
 
         aws: list[Awaitable] = []
 
@@ -611,20 +574,13 @@ class QdrantVectorStore(BaseModel):
 
 
 async def _aembed_sparse(
-    *queries: str, fn: SparseEncode
+    fn: SparseEncode, *queries: str
 ) -> list[rest.SparseVector]:
     ichunk, vchunk = await asyncio.to_thread(fn, queries)
     return [
         rest.SparseVector(indices=ids, values=vs)
         for ids, vs in zip(ichunk, vchunk, strict=True)
     ]
-
-
-def _min_max(xs: Sequence[float], /) -> Sequence[float]:
-    lo, hi = min(xs), max(xs)
-    if ptp := hi - lo:
-        return [(x - lo) / ptp for x in xs]  # scale to 0..1
-    return [0.5] * len(xs)
 
 
 # --------------- from llama index metadata to qdrant filters ----------------
@@ -738,8 +694,8 @@ def _meta_to_condition(f: 'MetadataFilter') -> rest.Condition | None:
 def _parse_query_results(
     points: Iterable[rest.Record | rest.ScoredPoint],
     dense_field_name: str = 'text-dense',
-) -> '_QueryResponse':
-    scored: list[tuple[BaseNode, float]] = []
+) -> list[_ScoredNode]:
+    scored: list[_ScoredNode] = []
 
     for pt in points:
         assert pt.payload is not None
@@ -747,12 +703,11 @@ def _parse_query_results(
 
         if node.embedding is None:
             vecs = pt.vector
+            if vecs is None:
+                continue
             if isinstance(vecs, list):
-                node.embedding = vecs  # type: ignore[assignment]
-            elif isinstance(vecs, dict) and (
-                isinstance(vec := vecs.get(dense_field_name), list)
-                or isinstance(vec := vecs.get(''), list)
-            ):
+                raise TypeError('Anonimous dense vectors are not supported')
+            if isinstance(vec := vecs.get(dense_field_name), list):
                 node.embedding = vec  # type: ignore[assignment]
 
         s = pt.score if isinstance(pt, rest.ScoredPoint) else 1.0

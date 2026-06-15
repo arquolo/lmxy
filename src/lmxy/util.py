@@ -5,6 +5,7 @@ __all__ = [
     'client',
     'get_clients',
     'get_ip_from_response',
+    'min_max',
     'raise_for_status',
     'warn_immediate_errors',
 ]
@@ -14,7 +15,7 @@ import random
 import sys
 import urllib.error
 from contextlib import contextmanager
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
@@ -522,3 +523,13 @@ _ERROR_TYPES = {
 }
 
 client, aclient = get_clients()
+
+
+# ---------------------------------- others ----------------------------------
+
+
+def min_max(xs: Sequence[float], /) -> Sequence[float]:
+    lo, hi = min(xs), max(xs)
+    if ptp := hi - lo:
+        return [(x - lo) / ptp for x in xs]  # scale to 0..1
+    return [0.5] * len(xs)
