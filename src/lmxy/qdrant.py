@@ -330,10 +330,17 @@ class QdrantVectorStore(BaseModel):
         points: list[rest.PointStruct] = []
         for node, semb in zip(nodes, sparse_embeddings, strict=True):
             vector: rest.VectorStruct = {}
-            if demb := node.embedding:
+
+            if dembs := node.metadata.get('embeddings'):
+                # Multiple embeddings in metadata
+                vector[self.dense_field_name] = dembs
+            elif demb := node.embedding:
+                # Single embedding
                 vector[self.dense_field_name] = demb
+
             if semb is not None:
                 vector[self.sparse_field_name] = semb
+
             if not vector:
                 raise ValueError('Embedding is not set')
 

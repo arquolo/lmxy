@@ -35,6 +35,9 @@ def node_to_metadata_dict(node: BaseNode, include_id: bool = False) -> dict:
     # Make metadata the top level
     metadata: dict = node_dict.pop('metadata', {})  # ! originally `get()`
 
+    # Omit bound multiple embeddings if any
+    metadata.pop('embeddings', None)
+
     # Move to top level
     if (text := node_dict.pop('text', None)) is not None:
         metadata['text'] = text
