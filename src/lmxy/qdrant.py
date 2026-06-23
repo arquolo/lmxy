@@ -714,7 +714,14 @@ def _parse_query_results(
                 continue
             if isinstance(vecs, list):
                 raise TypeError('Anonimous dense vectors are not supported')
-            if isinstance(vec := vecs.get(dense_field_name), list):
+            vec = vecs.get(dense_field_name)
+            if vec is None:
+                continue
+            if isinstance(vec, rest.SparseVector):
+                continue  # Unreachable
+            if all(isinstance(v, list) for v in vec):
+                node.metadata['embeddings'] = vec
+            else:
                 node.embedding = vec  # type: ignore[assignment]
 
         s = pt.score if isinstance(pt, rest.ScoredPoint) else 1.0
