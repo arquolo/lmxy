@@ -1,7 +1,7 @@
 __all__ = ['Embedder']
 
 from asyncio import Semaphore as AsyncSemaphore
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from threading import Semaphore as SyncSemaphore
 from typing import Literal
 
@@ -128,17 +128,45 @@ class Embedder(BaseEmbedding):
             self._embed = self._embed_impl
             self._aembed = self._aembed_impl
 
+    def handshake_sync(self) -> None:
+        gen = self._handshake()
+        req = next(gen)
+        try:
+            while True:
+                try:
+                    self._send(req)
+                except Exception as exc:  # noqa: BLE001
+                    req = gen.throw(exc)
+                else:
+                    req = next(gen)
+        except StopIteration:
+            return
+
     async def handshake(self) -> None:
+        gen = self._handshake()
+        req = next(gen)
+        try:
+            while True:
+                try:
+                    await self._asend(req)
+                except Exception as exc:  # noqa: BLE001
+                    req = gen.throw(exc)
+                else:
+                    req = next(gen)
+        except StopIteration:
+            return
+
+    def _handshake(self) -> Generator[Request, None, None]:
         # Try to find working combo
         errors: list[Exception] = []
         try:
             for self._endpoint in _endpoints:
                 # Find whether `input` or `inputs` must be in scheme
                 for self._text_key in _text_keys:
+                    req = self._request(['test line'])
                     try:
                         # Raw call, to not retry
-                        req = self._request(['test line'])
-                        await self._asend(req)
+                        yield req
                     except HTTPStatusError as exc:
                         if exc.response.status_code == 404:  # Missing url
                             break  # Next `_text_key` will fail too, skip it.
@@ -229,6 +257,10 @@ class Embedder(BaseEmbedding):
         return [f'{inst} {t}'.strip() for t in texts]
 
     def _request(self, texts: Sequence[str]) -> Request:
+        if not self._endpoint or not self._text_key:
+            raise RuntimeError(
+                'Embedder is not initialized. `handshake` was never called'
+            )
         headers = {'Content-Type': 'application/json'}
         if callable(self.auth_token):
             headers['Authorization'] = self.auth_token(self.base_url)
@@ -245,7 +277,8 @@ class Embedder(BaseEmbedding):
 
 
 def _handle_response(response: Response) -> list[Embedding]:
-    data = raise_for_status(response).result().content
+    raise_for_status(response, eager=True)
+    data = response.content
     match _parse_embeddings(data):
         case _OllamaResponse() as obj:
             return obj.embeddings

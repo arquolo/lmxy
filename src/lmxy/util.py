@@ -20,7 +20,7 @@ from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
 from types import FrameType
-from typing import Any, cast
+from typing import Any, cast, Literal, overload
 from urllib.parse import unquote
 
 import aiohttp
@@ -34,7 +34,7 @@ from ._env import env
 
 # --------------------------------- retrying ---------------------------------
 
-_FutureResponse = asyncio.Future[httpx.Response]
+_NoneFuture = asyncio.Future[None]
 
 _retriable_errors: list[type[BaseException]] = [
     TimeoutError,
@@ -478,26 +478,43 @@ def get_ip_from_response(rsp: httpx.Response, /) -> str | None:
     return ns.get_extra_info('server_addr')
 
 
-def raise_for_status(rsp: httpx.Response, /) -> _FutureResponse:
+@overload
+def raise_for_status(rsp: httpx.Response, /) -> _NoneFuture: ...
+@overload
+def raise_for_status(rsp: httpx.Response, /, eager: Literal[True]) -> None: ...
+
+
+def raise_for_status(
+    rsp: httpx.Response, /, eager: bool = False
+) -> _NoneFuture | None:
     """Raise status error if one occured.
 
     Adds more context to `Response.raise_for_status` (like response content).
     For sync response - call `.result()` on returned value first.
     For async response - DON'T FORGET to `await` first.
     """
+    if eager:
+        if rsp.is_success:
+            return None
+        if rsp.is_closed or not isinstance(rsp.stream, httpx.AsyncByteStream):
+            raise _new_status_error(rsp, rsp.read())
+        raise RuntimeError(
+            'Sync error handling on async not-yet-read response is forbidden'
+        )
+
     if rsp.is_success:
-        f = _FutureResponse()
-        f.set_result(rsp)
+        f = _NoneFuture()
+        f.set_result(None)
         return f
 
     # closed response or any synchronous response
     if rsp.is_closed or not isinstance(rsp.stream, httpx.AsyncByteStream):
-        f = _FutureResponse()
+        f = _NoneFuture()
         f.set_exception(_new_status_error(rsp, rsp.read()))
         return f
 
     # opened asynchronous response
-    async def _fail() -> httpx.Response:
+    async def _fail() -> None:
         raise _new_status_error(rsp, await rsp.aread()) from None
 
     return asyncio.ensure_future(_fail())

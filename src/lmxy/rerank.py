@@ -181,7 +181,7 @@ class QueryNodeSimilarityEvaluator(BaseModel):
             yield (req, f, scores)
 
             rsp = f.result()
-            raise_for_status(rsp).result()
+            raise_for_status(rsp, eager=True)
 
             for x in _RerankResponse.model_validate_json(rsp.content).results:
                 scores[x.index] = x.score
