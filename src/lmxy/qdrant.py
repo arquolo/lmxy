@@ -342,7 +342,11 @@ class QdrantVectorStore(BaseModel):
                 vector[self.sparse_field_name] = semb
 
             if not vector:
-                raise ValueError('Embedding is not set')
+                raise ValueError(
+                    'Embedding is not set: '
+                    f'keys={node.metadata.keys()}, '
+                    f'etype={type(node.embedding)}'
+                )
 
             payload = node_to_metadata_dict(node)
 
