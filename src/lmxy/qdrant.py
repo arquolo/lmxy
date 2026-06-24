@@ -557,7 +557,13 @@ class QdrantVectorStore(BaseModel):
         aws: list[Awaitable] = []
 
         if add_nodes:
-            await self.initialize(len(add_nodes[0].get_embedding()))
+            node0 = add_nodes[0]
+            emb_size = len(
+                embs[0]
+                if (embs := node0.metadata.get('embeddings'))
+                else node0.get_embedding()
+            )
+            await self.initialize(emb_size)
 
             points = await self._build_points(add_nodes)
             aws.append(self.aclient.upsert(self.collection_name, points))
