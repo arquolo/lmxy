@@ -191,10 +191,14 @@ class Embedder(BaseEmbedding):
         return list(await self._aembed(texts))
 
     def _embed_impl(self, texts: Sequence[str]) -> list[Embedding]:
+        if not texts:
+            return []
         req = self._request(texts)
         return self._retry(self._send, req)
 
     async def _aembed_impl(self, texts: Sequence[str]) -> list[Embedding]:
+        if not texts:
+            return []
         req = self._request(texts)
         return await self._retry(self._asend, req)
 
