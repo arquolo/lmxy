@@ -718,24 +718,25 @@ def _parse_query_results(
         assert pt.payload is not None
         node = metadata_dict_to_node(pt.payload, with_id=pt.id)
 
-        if node.embedding is None:
-            vecs = pt.vector
-            if vecs is None:
-                continue
-            if isinstance(vecs, list):
-                raise TypeError('Anonimous dense vectors are not supported')
-            vec = vecs.get(dense_field_name)
-            if vec is None:
-                continue
+        s = pt.score if isinstance(pt, rest.ScoredPoint) else 1.0
+        scored.append((node, s))
+
+        if node.embedding is not None or node.metadata.get('embeddings'):
+            continue
+
+        vecs = pt.vector
+        if vecs is None:
+            continue
+        if isinstance(vecs, list):
+            raise TypeError('Anonimous dense vectors are not supported')
+        vec = vecs.get(dense_field_name)
+        if vec is not None:
             if isinstance(vec, rest.SparseVector):
-                continue  # Unreachable
+                raise TypeError('sparse vector in dense field')
             if all(isinstance(v, list) for v in vec):
                 node.metadata['embeddings'] = vec
             else:
                 node.embedding = vec  # type: ignore[assignment]
-
-        s = pt.score if isinstance(pt, rest.ScoredPoint) else 1.0
-        scored.append((node, s))
 
     similarities = [s for _, s in scored]
     if any(similarities):
