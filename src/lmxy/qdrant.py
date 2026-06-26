@@ -123,7 +123,11 @@ class QdrantVectorStore(BaseModel):
 
     # Collection construction parameters
     dense_config: rest.VectorParams = rest.VectorParams(
-        size=0, distance=rest.Distance.COSINE
+        size=0,
+        distance=rest.Distance.COSINE,
+        multivector_config=rest.MultiVectorConfig(
+            comparator=rest.MultiVectorComparator.MAX_SIM
+        ),
     )
     sparse_config: rest.SparseVectorParams = rest.SparseVectorParams()
     shard_number: int | None = None
@@ -336,7 +340,7 @@ class QdrantVectorStore(BaseModel):
                 vector[self.dense_field_name] = dembs
             elif demb := node.embedding:
                 # Single embedding
-                vector[self.dense_field_name] = demb
+                vector[self.dense_field_name] = [demb]
 
             if semb is not None:
                 vector[self.sparse_field_name] = semb
