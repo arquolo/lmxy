@@ -17,13 +17,14 @@ from httpx import (
     Response,
     Timeout,
 )
-from llama_index.core.base.embeddings.base import BaseEmbedding, Embedding
+from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.utils.huggingface import (
     get_query_instruct_for_model_name,
     get_text_instruct_for_model_name,
 )
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
+from ._types import Embedding
 from .util import aclient, aretry, client, raise_for_status
 
 _endpoints = ['/embed', '/api/embed', '/embeddings', '/v1/embeddings']

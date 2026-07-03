@@ -1,5 +1,6 @@
 __all__ = [
     'BatchSparseEncoding',
+    'Embedding',
     'LlmFunction',
     'LlmResponse',
     'SparseEncode',
@@ -34,7 +35,8 @@ if TYPE_CHECKING:
     )
     from qdrant_client.http.models import Filter
 
-type BatchSparseEncoding = tuple[list[list[int]], list[list[float]]]
+type Embedding = list[float]
+type BatchSparseEncoding = tuple[list[list[int]], list[Embedding]]
 type SparseEncode = Callable[[Iterable[str]], BatchSparseEncoding]
 
 type LlmResponse = Union[  # noqa: UP007

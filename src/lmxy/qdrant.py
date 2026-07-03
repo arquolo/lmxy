@@ -22,7 +22,7 @@ from qdrant_client.http import models as rest
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from ._nodes import metadata_dict_to_node, node_to_metadata_dict
-from ._types import SparseEncode
+from ._types import SparseEncode, Embedding
 from .fastembed import get_sparse_encoder
 from .util import aretry, min_max
 
@@ -30,8 +30,9 @@ if TYPE_CHECKING:
     from llama_index.core.schema import BaseNode
     from llama_index.core.vector_stores import MetadataFilter, VectorStoreQuery
 
-type _ScoredNode = tuple['BaseNode', float]
-type _QueryPayload = tuple[list[float] | rest.SparseVector, int, float | None]
+    type _ScoredNode = tuple[BaseNode, float]
+
+type _QueryPayload = tuple[Embedding | rest.SparseVector, int, float | None]
 
 _SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, rest.Modifier.IDF)
 _LOCK = asyncio.Lock()
@@ -149,7 +150,7 @@ class QdrantVectorStore(BaseModel):
     dense_field_name: str = 'text-dense'
     sparse_field_name: str = 'text-sparse'
 
-    _update: Callable[
+    _llama_update: Callable[
         [Sequence['BaseNode | str']],
         Awaitable[Sequence[str]],
     ] = PrivateAttr()
@@ -168,14 +169,14 @@ class QdrantVectorStore(BaseModel):
             UnexpectedResponse,
             max_attempts=None if self.retries is None else 1 + self.retries,
         )
-        update = self._ll_update
+        llama_update = self._ll_llama_update
         if self.upsert_timeout is not None:
-            update = astreaming(
-                update,
+            llama_update = astreaming(
+                llama_update,
                 batch_size=self.upsert_batch_size,
                 timeout=self.upsert_timeout,
             )
-        self._update = retry_(update)
+        self._llama_update = retry_(llama_update)
 
         query = self._ll_query
         if self.query_timeout is not None:
@@ -315,9 +316,9 @@ class QdrantVectorStore(BaseModel):
 
         Returns node IDs that were added to the index.
         """
-        return await self._update(nodes)
+        return await self._llama_update(nodes)
 
-    async def _build_points(
+    async def _llama_build_points(
         self, nodes: Sequence['BaseNode'], /
     ) -> list[rest.PointStruct]:
         if not nodes:
@@ -367,7 +368,7 @@ class QdrantVectorStore(BaseModel):
         qdrant_filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
         dense_threshold: float | None = None,
-    ) -> Sequence[_ScoredNode]:
+    ) -> Sequence['_ScoredNode']:
         """Query index for top k most similar nodes."""
         #  NOTE: users can pass in qdrant_filters
         # (nested/complicated filters) to override the default MetadataFilters
@@ -380,26 +381,28 @@ class QdrantVectorStore(BaseModel):
             assert query.node_ids
             assert query.doc_ids is None
             assert query.filters is None
-            records = await self.qretrieve(
+            records = await self.qd_retrieve(
                 query.node_ids, with_payload=with_payload
             )
             return _parse_query_results(
                 records, dense_field_name=self.dense_field_name
             )
 
-        qs, hybrid_k, alpha = await self._parse_query(query, dense_threshold)
-        points = await self.qquery(
+        qs, hybrid_k, alpha = await self._llama_parse_query(
+            query, dense_threshold
+        )
+        points = await self.qd_query(
             qs,
             alpha=alpha,
             hybrid_k=hybrid_k,
             filters=qdrant_filters,
             with_payload=with_payload,
         )
-        return _parse_query_results(
+        return _llama_parse_query_results(
             points, dense_field_name=self.dense_field_name
         )
 
-    async def qretrieve(
+    async def qd_retrieve(
         self,
         ids: Sequence[str | int],
         with_payload: Sequence[str] | bool = True,
@@ -410,7 +413,7 @@ class QdrantVectorStore(BaseModel):
             self.collection_name, ids, with_payload=with_payload
         )
 
-    async def qquery(
+    async def qd_query(
         self,
         queries: dict[str, _QueryPayload],
         alpha: float,
@@ -454,7 +457,7 @@ class QdrantVectorStore(BaseModel):
         assert self.hybrid_fusion_fn is not None
         return self.hybrid_fusion_fn(*results, alpha=alpha, top_k=hybrid_k)
 
-    async def _parse_query(
+    async def _llama_parse_query(
         self, q: 'VectorStoreQuery', dense_threshold: float | None = None
     ) -> tuple[dict[str, _QueryPayload], int, float]:
         match q.mode.value:
@@ -474,7 +477,27 @@ class QdrantVectorStore(BaseModel):
         dense_k = q.similarity_top_k
         sparse_k = dense_k if q.sparse_top_k is None else q.sparse_top_k
         hybrid_k = dense_k if q.hybrid_top_k is None else q.hybrid_top_k
+        return await self._parse_query(
+            query_str=q.query_str,
+            query_vec=q.query_embedding,
+            dense_k=dense_k,
+            sparse_k=sparse_k,
+            hybrid_k=hybrid_k,
+            alpha=alpha,
+            dense_threshold=dense_threshold,
+        )
 
+    async def _parse_query(
+        self,
+        query_str: str | None = None,
+        query_vec: Embedding | None = None,
+        *,
+        dense_k: int,
+        sparse_k: int,
+        hybrid_k: int,
+        alpha: float = 1.0,
+        dense_threshold: float | None = None,
+    ) -> tuple[dict[str, _QueryPayload], int, float]:
         # With hybrid search we get:
         # - some nodes from dense search;
         # - some nodes from sparse search;
@@ -489,11 +512,11 @@ class QdrantVectorStore(BaseModel):
         # Dense scores are absolute, i.e. depend only on (query, node),
         # thus we can apply some globally fixed score threshold.
         if alpha > 0 and dense_k:
-            if not q.query_embedding:
+            if not query_vec:
                 msg = '`query_embedding` is required for dense queries'
                 raise ValueError(msg)
             queries[self.dense_field_name] = (
-                q.query_embedding,
+                query_vec,
                 dense_k,
                 dense_threshold,
             )
@@ -510,12 +533,10 @@ class QdrantVectorStore(BaseModel):
                     'to allow sparse/hybrid search'
                 )
                 raise ValueError(msg)
-            if not q.query_str:
+            if not query_str:
                 msg = '`query_str` is required for sparse queries'
                 raise ValueError(msg)
-            [sparse_e] = await _aembed_sparse(
-                self.sparse_query_fn, q.query_str
-            )
+            [sparse_e] = await _aembed_sparse(self.sparse_query_fn, query_str)
             queries[self.sparse_field_name] = (sparse_e, sparse_k, None)
 
         return queries, hybrid_k, alpha
@@ -533,7 +554,7 @@ class QdrantVectorStore(BaseModel):
 
     # CRUD: delete
     async def adelete_nodes(self, node_ids: Sequence[str], /) -> None:
-        await self._update(node_ids)
+        await self._llama_update(node_ids)
 
     async def aclear(self) -> None:
         async with _LOCK:
@@ -542,7 +563,7 @@ class QdrantVectorStore(BaseModel):
 
     # low levels
 
-    async def _ll_update(
+    async def _ll_llama_update(
         self, nodes: Sequence['BaseNode | str'], /
     ) -> Sequence[str]:
         # Merge and deduplicate updates & deletions
@@ -569,7 +590,7 @@ class QdrantVectorStore(BaseModel):
             )
             await self.initialize(emb_size)
 
-            points = await self._build_points(add_nodes)
+            points = await self._llama_build_points(add_nodes)
             aws.append(self.aclient.upsert(self.collection_name, points))
 
         if rm_ids and await self.is_initialized():
@@ -712,10 +733,10 @@ def _meta_to_condition(f: 'MetadataFilter') -> rest.Condition | None:
 # ------------------------ from qdrant to llama index ------------------------
 
 
-def _parse_query_results(
+def _llama_parse_query_results(
     points: Iterable[rest.Record | rest.ScoredPoint],
     dense_field_name: str = 'text-dense',
-) -> list[_ScoredNode]:
+) -> list['_ScoredNode']:
     scored: list[_ScoredNode] = []
 
     for pt in points:
