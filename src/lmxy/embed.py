@@ -36,6 +36,24 @@ def _too_many_requests(e: BaseException) -> bool:
     )
 
 
+def _get_token_trimmer(
+    max_chars: int, max_batch_size: int
+) -> Callable[[Sequence[str]], int]:
+    def usable_size(texts: Sequence[str]) -> int:
+        if max_batch_size:
+            texts = texts[:max_batch_size]
+        nchars = 0
+        for n, t in enumerate(texts, 1):
+            nchars += len(t)
+            if nchars > max_chars:  # Too long text
+                return max(n - 1, 1)
+        if len(texts) == max_batch_size:
+            return max_batch_size
+        return 0
+
+    return usable_size
+
+
 # -------------------------------- embedding ---------------------------------
 
 
@@ -77,6 +95,7 @@ class Embedder(BaseEmbedding):
     retries: int | None = 10
     concurrency: int = 10
     latency: float = 0  # >0 to enable automatic batching
+    max_chars: int = 100_000  # >0 to limit N chars in single request
 
     client: Client = client
     aclient: AsyncClient = aclient
@@ -104,24 +123,28 @@ class Embedder(BaseEmbedding):
                 self.model_name
             )
         self._instructions = {
-            'text': self.text_instruction,
-            'query': self.query_instruction,
+            'text': self.text_instruction or '',
+            'query': self.query_instruction or '',
         }
         self._endpoint = self._text_key = ''
         self._ssemlock = SyncSemaphore(self.concurrency)
         self._asemlock = AsyncSemaphore(self.concurrency)
 
+        usable_size = _get_token_trimmer(
+            max_chars=self.max_chars,
+            max_batch_size=self.embed_batch_size,
+        )
         if self.latency > 0:
             self._embed = streaming(
                 self._embed_impl,
-                batch_size=self.embed_batch_size,
+                batch_size=usable_size,
                 timeout=self.latency,
                 pool_timeout=self.timeout or 360,
                 workers=self.concurrency,
             )
             self._aembed = astreaming(
                 self._aembed_impl,
-                batch_size=self.embed_batch_size,
+                batch_size=usable_size,
                 timeout=self.latency,
             )
         else:
