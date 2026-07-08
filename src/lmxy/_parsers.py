@@ -2,7 +2,7 @@ __all__ = ['glue_reps', 'no_think', 'trim_repetitions_at_end', 'wordify']
 
 import re
 import string
-from collections.abc import AsyncIterator, AsyncIterable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Sequence
 
 _THINK_START = '<think>'
 _THINK_STOP = '</think>'

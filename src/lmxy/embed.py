@@ -1,8 +1,8 @@
 __all__ = ['Embedder']
 
-from asyncio import Semaphore as AsyncSemaphore
+import asyncio
+import threading
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from threading import Semaphore as SyncSemaphore
 from typing import Literal
 
 from glow import astreaming, streaming
@@ -42,11 +42,12 @@ def _get_token_trimmer(
     def usable_size(texts: Sequence[str]) -> int:
         if max_batch_size:
             texts = texts[:max_batch_size]
-        nchars = 0
-        for n, t in enumerate(texts, 1):
-            nchars += len(t)
-            if nchars > max_chars:  # Too long text
-                return max(n - 1, 1)
+        if max_chars:
+            nchars = 0
+            for n, t in enumerate(texts, 1):
+                nchars += len(t)
+                if nchars > max_chars:  # Too long text
+                    return max(n - 1, 1)
         if len(texts) == max_batch_size:
             return max_batch_size
         return 0
@@ -103,8 +104,8 @@ class Embedder(BaseEmbedding):
     _instructions: dict[str, str] = PrivateAttr()
     _endpoint: str = PrivateAttr()
     _text_key: str = PrivateAttr()
-    _ssemlock: SyncSemaphore = PrivateAttr()
-    _asemlock: AsyncSemaphore = PrivateAttr()
+    _ssemlock: threading.Semaphore = PrivateAttr()
+    _asemlock: asyncio.Semaphore = PrivateAttr()
     _embed: Callable[[Sequence[str]], Sequence[Embedding]] = PrivateAttr()
     _aembed: Callable[[Sequence[str]], Awaitable[Sequence[Embedding]]] = (
         PrivateAttr()
@@ -127,8 +128,8 @@ class Embedder(BaseEmbedding):
             'query': self.query_instruction or '',
         }
         self._endpoint = self._text_key = ''
-        self._ssemlock = SyncSemaphore(self.concurrency)
-        self._asemlock = AsyncSemaphore(self.concurrency)
+        self._ssemlock = threading.Semaphore(self.concurrency)
+        self._asemlock = asyncio.Semaphore(self.concurrency)
 
         usable_size = _get_token_trimmer(
             max_chars=self.max_chars,

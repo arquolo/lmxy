@@ -6,7 +6,6 @@ __all__ = [
 from collections.abc import Mapping
 from uuid import UUID
 
-from pydantic_core import from_json, to_json
 from llama_index.core.schema import (
     BaseNode,
     ImageNode,
@@ -14,6 +13,7 @@ from llama_index.core.schema import (
     Node,
     TextNode,
 )
+from pydantic_core import from_json, to_json
 
 
 def node_to_metadata_dict(node: BaseNode, include_id: bool = False) -> dict:

@@ -14,20 +14,20 @@ import asyncio
 import random
 import sys
 import urllib.error
-from contextlib import contextmanager
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
 from types import FrameType
-from typing import Any, cast, Literal, overload
+from typing import Any, Literal, cast, overload
 from urllib.parse import unquote
 
 import aiohttp
 import httpx
-from tenacity import RetryCallState, retry
-from glow import memoize, register_post_import_hook, declutter_tb
+from glow import declutter_tb, memoize, register_post_import_hook
 from loguru import logger
+from tenacity import RetryCallState, retry
 from yarl import URL
 
 from ._env import env

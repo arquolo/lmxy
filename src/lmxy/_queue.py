@@ -150,6 +150,6 @@ async def _wait_for[T](fs: set[Future[T]]) -> T:
         fs.discard(f)
 
 
-def _cancel_all(waiters: set[Future], msg: str | None = None) -> None:
+def _cancel_all(waiters: Iterable[Future], msg: str | None = None) -> None:
     for f in waiters:
         f.cancel(msg)

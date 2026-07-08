@@ -11,9 +11,9 @@ from llama_index.core.base.llms.types import (
     ChatMessage,
     ChatResponse,
     CompletionResponse,
+    ImageBlock,
     LLMMetadata,
     TextBlock,
-    ImageBlock,
 )
 from llama_index.core.llms.callbacks import (
     llm_chat_callback,
@@ -254,9 +254,9 @@ class OpenAiLike(FunctionCallingLLM):
             all_kwargs['prompt'] = prompt
 
         if messages:
-            all_kwargs['messages'] = (
+            all_kwargs['messages'] = [
                 _to_openai_message_dict(m) for m in messages
-            )
+            ]
 
         num_ctx = self.context_window
         all_kwargs |= {
