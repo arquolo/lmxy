@@ -12,7 +12,11 @@ from ._types import (
 )
 
 if TYPE_CHECKING:
-    from ._responses import unpack_response
+    from ._responses import (
+        get_full_response,
+        tokens_from_response,
+        unpack_response,
+    )
     from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
@@ -22,7 +26,11 @@ if TYPE_CHECKING:
     from .tokenizer import get_tokenizer
 else:
     _exports = {
-        '._responses': ['unpack_response'],
+        '._responses': [
+            'get_full_response',
+            'tokens_from_response',
+            'unpack_response',
+        ],
         '.embed': ['Embedder'],
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
@@ -59,10 +67,12 @@ __all__ = [
     'SparseEncode',
     'Tokenize',
     'VectorStore',
+    'get_full_response',
     'get_sparse_encoder',
     'get_tokenizer',
     'glue_reps',
     'no_think',
+    'tokens_from_response',
     'trim_repetitions_at_end',
     'unpack_response',
     'wordify',

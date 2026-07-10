@@ -1,6 +1,7 @@
-__all__ = ['unpack_response']
+__all__ = ['get_full_response', 'tokens_from_response', 'unpack_response']
 
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable
+from io import StringIO
 
 from llama_index.core.base.response.schema import (
     AsyncStreamingResponse,
@@ -14,7 +15,7 @@ from llama_index.core.chat_engine.types import (
 from llama_index.core.schema import NodeWithScore
 from pydantic import BaseModel
 
-from ._types import LlmFunction
+from ._types import LlmFunction, LlmResponse
 
 
 async def unpack_response[**P](
@@ -25,37 +26,43 @@ async def unpack_response[**P](
 ]:
     aw_agen = f(*args, **kwargs)
     ret = await aw_agen if isinstance(aw_agen, Awaitable) else aw_agen
-
     if isinstance(ret, AsyncIterator | str):
         return ret, []
+    return tokens_from_response(ret), ret.source_nodes
 
-    obj: AsyncIterator[str] | str
-    match ret:
+
+def tokens_from_response(lrsp: LlmResponse) -> AsyncIterator[str] | str:
+    match lrsp:
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
         # Synthesizer.(a)synthesize if output_cls is set
         case Response(response=None) | PydanticResponse(response=None):
-            obj = ''
+            return ''
 
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
         case AgentChatResponse(response=obj) | Response(response=str(obj)):
-            pass
+            return obj
 
         # Synthesizer.(a)synthesize if output_cls is set
-        case PydanticResponse(response=BaseModel() as resp):
-            obj = resp.model_dump_json()
+        case PydanticResponse(response=BaseModel() as rsp):
+            return rsp.model_dump_json()
 
         # Synthesizer(stream=True).asynthesize
         case AsyncStreamingResponse():
-            obj = ret.response_gen
+            return lrsp.response_gen
 
         # Chat.(a)astream_chat
         case StreamingAgentChatResponse():
-            obj = ret.async_response_gen()
+            return lrsp.async_response_gen()
 
         case _:
-            msg = f'Unsupported type: {type(ret)}'
+            msg = f'Unsupported type: {type(lrsp)}'
             raise NotImplementedError(msg)
 
-    return obj, ret.source_nodes
+
+async def get_full_response(tokens: AsyncIterable[str]) -> str:
+    buf = StringIO()
+    async for tk in tokens:
+        buf.write(tk)
+    return buf.getvalue()
