@@ -189,7 +189,7 @@ class Qdrant(BaseModel):
 
         await self._setup_indices()
 
-    async def _setup_indices(self):
+    async def _setup_indices(self) -> None:
         tenant_schema = rest.KeywordIndexParams(
             type=rest.KeywordIndexType.KEYWORD, is_tenant=True
         )
@@ -368,8 +368,8 @@ class Qdrant(BaseModel):
                     'to allow sparse/hybrid search'
                 )
                 raise ValueError(msg)
-            # TODO: batchify aembed
-            [vec] = await _aembed_sparse(self.sparse_query_fn, q)
+            [(ids, vals)] = await asyncio.to_thread(self.sparse_query_fn, [q])
+            vec = rest.SparseVector(indices=ids, values=vals)
             using = self.sparse_field_name
         else:
             vec = q
@@ -492,21 +492,11 @@ async def _aembed_sparse_records(
         vectors.append(None)
 
     if embed_texts:
-        vs = await _aembed_sparse(fn, *embed_texts)
-        for i, v in zip(embed_ids, vs, strict=True):
-            vectors[i] = v
+        svecs = await asyncio.to_thread(fn, embed_texts)
+        for i, (ids, vs) in zip(embed_ids, svecs, strict=True):
+            vectors[i] = rest.SparseVector(indices=ids, values=vs)
 
     return vectors
-
-
-async def _aembed_sparse(
-    fn: SparseEncode, *queries: str
-) -> list[rest.SparseVector]:
-    ichunk, vchunk = await asyncio.to_thread(fn, queries)
-    return [
-        rest.SparseVector(indices=ids, values=vs)
-        for ids, vs in zip(ichunk, vchunk, strict=True)
-    ]
 
 
 # -------------------------- from qdrant to native ---------------------------

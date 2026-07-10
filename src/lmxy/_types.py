@@ -1,5 +1,4 @@
 __all__ = [
-    'BatchSparseEncoding',
     'Embedding',
     'LlmFunction',
     'LlmResponse',
@@ -8,13 +7,7 @@ __all__ = [
     'VectorStore',
 ]
 
-from collections.abc import (
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Iterable,
-    Sequence,
-)
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any, Protocol, Union
 
 if TYPE_CHECKING:
@@ -36,8 +29,9 @@ if TYPE_CHECKING:
     from qdrant_client.http.models import Filter
 
 type Embedding = list[float]
-type BatchSparseEncoding = tuple[list[list[int]], list[Embedding]]
-type SparseEncode = Callable[[Iterable[str]], BatchSparseEncoding]
+type SparseEncoding = tuple[list[int], Embedding]
+type BatchSparseEmbedding = list[SparseEncoding]
+type SparseEncode = Callable[[Sequence[str]], Sequence[SparseEncoding]]
 
 type LlmResponse = Union[  # noqa: UP007
     'Response',
