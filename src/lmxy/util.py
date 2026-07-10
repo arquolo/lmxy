@@ -546,6 +546,8 @@ client, aclient = get_clients()
 
 
 def min_max(xs: Sequence[float], /) -> Sequence[float]:
+    if not xs:
+        return []
     lo, hi = min(xs), max(xs)
     if ptp := hi - lo:
         return [(x - lo) / ptp for x in xs]  # scale to 0..1

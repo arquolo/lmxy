@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
-    from .qdrant import QdrantVectorStore
+    from .qdrant import Qdrant
+    from .qdrant_llama import QdrantVectorStore
     from .rerank import Reranker
     from .tokenizer import get_tokenizer
 else:
@@ -25,7 +26,8 @@ else:
         '.embed': ['Embedder'],
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
-        '.qdrant': ['QdrantVectorStore'],
+        '.qdrant': ['Qdrant'],
+        '.qdrant_llama': ['QdrantVectorStore'],
         '.rerank': ['Reranker'],
         '.tokenizer': ['get_tokenizer'],
     }
@@ -51,6 +53,7 @@ __all__ = [
     'LlmResponse',
     'MulticastQueue',
     'OpenAiLike',
+    'Qdrant',
     'QdrantVectorStore',
     'Reranker',
     'SparseEncode',
