@@ -553,6 +553,8 @@ class _Request(BaseModel):
     def __add__(self, rhs: '_Request') -> '_Request':
         async def add() -> Sequence[ScoredRecord]:
             rs1, rs2 = await asyncio.gather(self.call(), rhs.call())
+            if not (rs1 and rs2):
+                return rs1 or rs2
             scores1 = {r['id_']: r['score'] for r in rs1}
             scores2 = {r['id_']: r['score'] for r in rs2}
             uniq = {r['id_']: r for r in [*rs1, *rs2]}
