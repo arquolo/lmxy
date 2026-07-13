@@ -8,15 +8,13 @@ from ._types import (
     LlmResponse,
     SparseEncode,
     Tokenize,
+    Tokens,
     VectorStore,
+    get_full_response,
 )
 
 if TYPE_CHECKING:
-    from ._responses import (
-        get_full_response,
-        tokens_from_response,
-        unpack_response,
-    )
+    from ._responses import tokens_from_response, unpack_response
     from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
@@ -66,6 +64,7 @@ __all__ = [
     'Reranker',
     'SparseEncode',
     'Tokenize',
+    'Tokens',
     'VectorStore',
     'get_full_response',
     'get_sparse_encoder',

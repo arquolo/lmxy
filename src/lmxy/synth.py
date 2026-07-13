@@ -1,7 +1,5 @@
 __all__ = ['synthesize']
 
-from collections.abc import AsyncIterator
-
 from glow import span_task
 from llama_index.core import (
     BasePromptTemplate,
@@ -19,8 +17,8 @@ from llama_index.core.schema import MetadataMode, NodeWithScore
 from loguru import logger
 from pydantic import ValidationError
 
-from ._responses import get_full_response, tokens_from_response
-from ._types import Tokenize
+from ._responses import tokens_from_response
+from ._types import Tokenize, Tokens, get_full_response
 
 
 @span_task
@@ -35,7 +33,7 @@ async def synthesize(
     callback_manager: CallbackManager | None = None,
     # = .core.response_synthesizers.refine.DEFAULT_RESPONSE_PADDING_SIZE
     padding: int = 500,
-) -> AsyncIterator[str] | str:
+) -> Tokens:
     """
     Response synthesizer has different modes to handle nodes:
     - SIMPLE_SUMMARIZE - O(1), truncates input.
@@ -134,13 +132,13 @@ async def synthesize(
         try:
             agen = await llm.astream(prompt, **kwds)
             if not text_chunks:  # Last chunk, do stream
-                return agen
+                return Tokens(agen)
             if answer := await get_full_response(agen):
                 rstr = answer
         except (ValidationError, ValueError, TypeError) as e:
             logger.warning(f'LLM response error: {e}', exc_info=True)
 
-    return rstr or ''
+    return Tokens(rstr)
 
 
 def _get_prompt_size(prompt: BasePromptTemplate) -> int:

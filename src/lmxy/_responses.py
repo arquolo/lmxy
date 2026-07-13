@@ -1,7 +1,6 @@
-__all__ = ['get_full_response', 'tokens_from_response', 'unpack_response']
+__all__ = ['tokens_from_response', 'unpack_response']
 
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable
-from io import StringIO
+from collections.abc import AsyncIterator, Awaitable
 
 from llama_index.core.base.response.schema import (
     AsyncStreamingResponse,
@@ -15,54 +14,46 @@ from llama_index.core.chat_engine.types import (
 from llama_index.core.schema import NodeWithScore
 from pydantic import BaseModel
 
-from ._types import LlmFunction, LlmResponse
+from ._types import LlmFunction, LlmResponse, Tokens
 
 
 async def unpack_response[**P](
     f: LlmFunction[P], *args: P.args, **kwargs: P.kwargs
-) -> tuple[
-    AsyncIterator[str] | str,
-    list[NodeWithScore],
-]:
+) -> tuple[Tokens, list[NodeWithScore]]:
     aw_agen = f(*args, **kwargs)
     ret = await aw_agen if isinstance(aw_agen, Awaitable) else aw_agen
-    if isinstance(ret, AsyncIterator | str):
-        return ret, []
+    if isinstance(ret, AsyncIterator):
+        return Tokens(ret), []
+    if isinstance(ret, str):
+        return Tokens(ret), []
     return tokens_from_response(ret), ret.source_nodes
 
 
-def tokens_from_response(lrsp: LlmResponse) -> AsyncIterator[str] | str:
+def tokens_from_response(lrsp: LlmResponse) -> Tokens:
     match lrsp:
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
         # Synthesizer.(a)synthesize if output_cls is set
         case Response(response=None) | PydanticResponse(response=None):
-            return ''
+            return Tokens()
 
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
         case AgentChatResponse(response=obj) | Response(response=str(obj)):
-            return obj
+            return Tokens(obj)
 
         # Synthesizer.(a)synthesize if output_cls is set
         case PydanticResponse(response=BaseModel() as rsp):
-            return rsp.model_dump_json()
+            return Tokens(rsp.model_dump_json())
 
         # Synthesizer(stream=True).asynthesize
         case AsyncStreamingResponse():
-            return lrsp.response_gen
+            return Tokens(lrsp.response_gen)
 
         # Chat.(a)astream_chat
         case StreamingAgentChatResponse():
-            return lrsp.async_response_gen()
+            return Tokens(lrsp.async_response_gen())
 
         case _:
             msg = f'Unsupported type: {type(lrsp)}'
             raise NotImplementedError(msg)
-
-
-async def get_full_response(tokens: AsyncIterable[str]) -> str:
-    buf = StringIO()
-    async for tk in tokens:
-        buf.write(tk)
-    return buf.getvalue()

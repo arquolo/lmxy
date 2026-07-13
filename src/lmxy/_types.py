@@ -4,11 +4,22 @@ __all__ = [
     'LlmResponse',
     'SparseEncode',
     'Tokenize',
+    'Tokens',
     'VectorStore',
+    'get_full_response',
 ]
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Protocol, Union
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Generator,
+    Sequence,
+)
+from dataclasses import dataclass
+from io import StringIO
+from typing import TYPE_CHECKING, Any, Never, Protocol, Union
 
 if TYPE_CHECKING:
     from llama_index.core.base.response.schema import (
@@ -67,3 +78,41 @@ class VectorStore(Protocol):
     # CRUD: Delete
     async def adelete(self, ref_doc_id: str) -> None: ...
     async def adelete_nodes(self, node_ids: Sequence[str]) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Tokens:
+    obj: AsyncIterator[str] | str | None = None
+
+    def __await__(self) -> Generator[Any, Any, str]:
+        if self.obj is None or isinstance(self.obj, str):
+            return _await(self.obj or '')
+        return get_full_response(self.obj).__await__()
+
+    def __aiter__(self) -> AsyncIterator[str]:
+        if self.obj is None:
+            return _empty_aiter()
+        if isinstance(self.obj, str):
+            return _ayield(self.obj) if self.obj else _empty_aiter()
+        return self.obj
+
+
+async def get_full_response(tokens: AsyncIterable[str]) -> str:
+    buf = StringIO()
+    async for tk in tokens:
+        buf.write(tk)
+    return buf.getvalue()
+
+
+def _await[T](x: T) -> Generator[Never, Any, T]:
+    yield from ()
+    return x
+
+
+async def _ayield[T](x: T) -> AsyncIterator[T]:
+    yield x
+
+
+async def _empty_aiter() -> AsyncIterator[Never]:
+    return
+    yield
