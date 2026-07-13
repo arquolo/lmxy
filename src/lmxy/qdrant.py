@@ -332,7 +332,9 @@ class Qdrant(BaseModel):
             points = await self.qd_query(
                 q, limit, threshold, filters=filters, with_payload=with_payload
             )
-            return [_qd_to_record(pt, self.dense_field_name) for pt in points]
+            rs = [_qd_to_record(pt, self.dense_field_name) for pt in points]
+            _log_scores(rs)
+            return rs
 
         return _Request(call=call)
 
@@ -562,6 +564,7 @@ class _Request(BaseModel):
                 {**r, 'score': scores1.get(id_, 0) + scores2.get(id_, 0)}
                 for id_, r in uniq.items()
             ]
+            _log_scores(rs, name='fused records')
             return sorted(rs, key=lambda r: r['score'], reverse=True)
 
         return _Request(call=add)
@@ -595,17 +598,13 @@ class _Request(BaseModel):
 
         return _Request(call=norm)
 
-    async def _run_and_report(self) -> Sequence[ScoredRecord]:
-        rs = await self.call()
-        scores = [r['score'] for r in rs]
-        if any(scores):
-            logger.info(
-                'Retrieved %d records with score: %.3g - %.3g',
-                len(scores),
-                min(scores),
-                max(scores),
-            )
-        return rs
-
     def __await__(self) -> Generator[Any, Any, Sequence[ScoredRecord]]:
-        return self._run_and_report().__await__()
+        return self.call().__await__()
+
+
+def _log_scores(rs: Sequence[ScoredRecord], name: str = 'records') -> None:
+    scores = [r['score'] for r in rs]
+    if not any(scores):
+        return
+    n, lo, hi = len(scores), min(scores), max(scores)
+    logger.info(f'Retrieved {n} {name} with score: {lo:.3g} .. {hi:.3g}')
