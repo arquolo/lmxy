@@ -5,7 +5,6 @@ __all__ = [
     'SparseEncode',
     'Tokenize',
     'Tokens',
-    'VectorStore',
     'get_full_response',
 ]
 
@@ -19,7 +18,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Never, Protocol, Union
+from typing import TYPE_CHECKING, Any, Never, Union
 
 if TYPE_CHECKING:
     from llama_index.core.base.response.schema import (
@@ -32,12 +31,7 @@ if TYPE_CHECKING:
         AgentChatResponse,
         StreamingAgentChatResponse,
     )
-    from llama_index.core.schema import BaseNode, NodeWithScore
-    from llama_index.core.vector_stores.types import (
-        VectorStoreQuery,
-        VectorStoreQueryResult,
-    )
-    from qdrant_client.http.models import Filter
+    from llama_index.core.schema import NodeWithScore
 
 type Embedding = list[float]
 type SparseEncoding = tuple[list[int], Embedding]
@@ -54,7 +48,7 @@ type LlmResponse = Union[  # noqa: UP007
     str,
 ]
 type NativeResponse = Union[  # noqa: UP007
-    tuple['Tokens', Sequence['NodeWithScore']],
+    tuple['Tokens', list['NodeWithScore']],
     'Tokens',
 ]
 type LlmFunction[**P] = Callable[
@@ -64,27 +58,6 @@ type LlmFunction[**P] = Callable[
     | AsyncIterator[str],
 ]
 type Tokenize = Callable[[str], list[Any]]
-
-
-class VectorStore(Protocol):
-    # CRUD: Create & Update (overwrite)
-    async def async_add(
-        self, nodes: Sequence['BaseNode']
-    ) -> Sequence[str]: ...
-
-    # CRUD: Read
-    async def aquery(
-        self,
-        query: 'VectorStoreQuery',
-        /,
-        *,
-        qdrant_filters: 'Filter | None' = ...,
-        dense_threshold: float | None = ...,
-    ) -> 'VectorStoreQueryResult': ...
-
-    # CRUD: Delete
-    async def adelete(self, ref_doc_id: str) -> None: ...
-    async def adelete_nodes(self, node_ids: Sequence[str]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)

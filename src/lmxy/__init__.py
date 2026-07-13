@@ -9,7 +9,6 @@ from ._types import (
     SparseEncode,
     Tokenize,
     Tokens,
-    VectorStore,
     get_full_response,
 )
 
@@ -65,7 +64,6 @@ __all__ = [
     'SparseEncode',
     'Tokenize',
     'Tokens',
-    'VectorStore',
     'get_full_response',
     'get_sparse_encoder',
     'get_tokenizer',
