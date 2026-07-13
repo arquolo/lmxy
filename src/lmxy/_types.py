@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         AgentChatResponse,
         StreamingAgentChatResponse,
     )
-    from llama_index.core.schema import BaseNode
+    from llama_index.core.schema import BaseNode, NodeWithScore
     from llama_index.core.vector_stores.types import (
         VectorStoreQuery,
         VectorStoreQueryResult,
@@ -53,8 +53,15 @@ type LlmResponse = Union[  # noqa: UP007
     'StreamingAgentChatResponse',
     str,
 ]
+type NativeResponse = Union[  # noqa: UP007
+    tuple['Tokens', Sequence['NodeWithScore']],
+    'Tokens',
+]
 type LlmFunction[**P] = Callable[
-    P, Awaitable[LlmResponse | AsyncIterator[str]] | AsyncIterator[str]
+    P,
+    Awaitable[LlmResponse | NativeResponse | AsyncIterator[str]]
+    | NativeResponse
+    | AsyncIterator[str],
 ]
 type Tokenize = Callable[[str], list[Any]]
 

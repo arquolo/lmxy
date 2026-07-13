@@ -21,7 +21,15 @@ async def unpack_response[**P](
     f: LlmFunction[P], *args: P.args, **kwargs: P.kwargs
 ) -> tuple[Tokens, list[NodeWithScore]]:
     aw_agen = f(*args, **kwargs)
-    ret = await aw_agen if isinstance(aw_agen, Awaitable) else aw_agen
+    ret = (
+        await aw_agen
+        if isinstance(aw_agen, Awaitable) and not isinstance(aw_agen, Tokens)
+        else aw_agen
+    )
+    if isinstance(ret, tuple):
+        return ret
+    if isinstance(ret, Tokens):
+        return ret, []
     if isinstance(ret, AsyncIterator):
         return Tokens(ret), []
     if isinstance(ret, str):
