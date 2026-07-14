@@ -30,7 +30,6 @@ from pydantic import Field, PrivateAttr
 
 from ._async import map_ctx
 from ._types import Tokenize
-from .tokenizer import get_tokenizer
 from .util import aretry
 
 if TYPE_CHECKING:
@@ -149,6 +148,8 @@ class OpenAiLike(FunctionCallingLLM):
             http_client=self.async_http_client,
         )
         if isinstance(self.tokenize, str):
+            from .tokenizer import get_tokenizer  # noqa: PLC0415
+
             self.tokenize = get_tokenizer(self.tokenize)
 
     @classmethod
