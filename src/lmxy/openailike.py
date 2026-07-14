@@ -23,11 +23,12 @@ from llama_index.core.llms.function_calling import FunctionCallingLLM
 from llama_index.core.llms.llm import ToolSelection
 from llama_index.core.llms.utils import parse_partial_json
 from llama_index_instrumentation import get_dispatcher
-from openai import AsyncOpenAI, AsyncStream, OpenAI, Stream
+from openai import AsyncOpenAI, OpenAI
 from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from pydantic import Field, PrivateAttr
 
+from ._async import map_ctx
 from ._types import Tokenize
 from .tokenizer import get_tokenizer
 from .util import aretry
@@ -192,7 +193,7 @@ class OpenAiLike(FunctionCallingLLM):
         """Stream complete the prompt."""
         kws = self._get_kwds(prompt=prompt, formatted=formatted, **kwargs)
         s = self._client.completions.create(stream=True, **kws)
-        return _map_ctx(s, _Decoder().completion)
+        return map_ctx(s, _Decoder().completion)
 
     @llm_completion_callback()
     @_llm_retry  # NOTE: Stream breaks are on caller's side
@@ -202,7 +203,7 @@ class OpenAiLike(FunctionCallingLLM):
         """Stream complete the prompt."""
         kws = self._get_kwds(prompt=prompt, formatted=formatted, **kwargs)
         s = await self._aclient.completions.create(stream=True, **kws)
-        return _amap_ctx(s, _Decoder().completion)
+        return map_ctx(s, _Decoder().completion)
 
     @llm_chat_callback()
     @_llm_retry
@@ -229,7 +230,7 @@ class OpenAiLike(FunctionCallingLLM):
     ) -> Generator[ChatResponse]:
         kws = self._get_kwds(messages=messages, **kwargs)
         s = self._client.chat.completions.create(stream=True, **kws)
-        return _map_ctx(s, _Decoder().chat)
+        return map_ctx(s, _Decoder().chat)
 
     @llm_chat_callback()
     @_llm_retry  # NOTE: Stream breaks are on caller's side
@@ -238,7 +239,7 @@ class OpenAiLike(FunctionCallingLLM):
     ) -> AsyncGenerator[ChatResponse]:
         kwds = self._get_kwds(messages=messages, **kwargs)
         s = await self._aclient.chat.completions.create(stream=True, **kwds)
-        return _amap_ctx(s, _Decoder().chat)
+        return map_ctx(s, _Decoder().chat)
 
     def _get_kwds(
         self,
@@ -375,20 +376,6 @@ class OpenAiLike(FunctionCallingLLM):
 
 
 # -------------------------------- low level ---------------------------------
-
-
-def _map_ctx[T, R](s: Stream[T], fn: Callable[[T], R]) -> Generator[R]:
-    with s:
-        for rsp in s:
-            yield fn(rsp)
-
-
-async def _amap_ctx[T, R](
-    s: AsyncStream[T], fn: Callable[[T], R]
-) -> AsyncGenerator[R]:
-    async with s:
-        async for rsp in s:
-            yield fn(rsp)
 
 
 def _to_openai_message_dict(m: ChatMessage) -> 'ChatCompletionMessageParam':

@@ -14,27 +14,26 @@ import asyncio
 import random
 import sys
 import urllib.error
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
 from types import FrameType
-from typing import Any, Literal, cast, overload
+from typing import Any, Literal, Never, cast, overload
 from urllib.parse import unquote
 
 import aiohttp
 import httpx
+from aiohttp.streams import EofStream
 from glow import declutter_tb, memoize, register_post_import_hook
 from loguru import logger
 from tenacity import RetryCallState, retry
 from yarl import URL
 
+from ._async import Areturn
 from ._env import env
 
 # --------------------------------- retrying ---------------------------------
-
-_NoneFuture = asyncio.Future[None]
 
 _retriable_errors: list[type[BaseException]] = [
     TimeoutError,
@@ -247,7 +246,9 @@ class AiohttpTransport(httpx.AsyncBaseTransport):
                 connector=connector,
                 headers=headers,
                 proxy=proxy,
+                skip_auto_headers=_SKIP_AUTO_HEADERS,
                 cookie_jar=aiohttp.DummyCookieJar() if no_cookie else None,
+                auto_decompress=False,
                 middlewares=[_RetryMiddleware(retries)] if retries else (),
             )
 
@@ -271,7 +272,7 @@ class AiohttpTransport(httpx.AsyncBaseTransport):
         timeout = request.extensions.get('timeout', {})
         sni_hostname = request.extensions.get('sni_hostname')
 
-        with _map_aiohttp_exceptions():
+        try:
             data: bytes | httpx.AsyncByteStream | None
             try:
                 data = request.content or None
@@ -286,9 +287,7 @@ class AiohttpTransport(httpx.AsyncBaseTransport):
                 data=data,
                 headers=request.headers,
                 allow_redirects=True,
-                auto_decompress=False,
                 compress=False,
-                skip_auto_headers=_SKIP_AUTO_HEADERS,
                 timeout=aiohttp.ClientTimeout(
                     sock_connect=timeout.get('connect'),
                     sock_read=timeout.get('read'),
@@ -296,6 +295,8 @@ class AiohttpTransport(httpx.AsyncBaseTransport):
                 ),
                 server_hostname=sni_hostname,
             ).__aenter__()
+        except Exception as exc:
+            raise _reexcept_aiohttp_to_httpx(exc) from exc
 
         extensions = {'http_version': b'HTTP/1.1'}
         if rsp.reason:
@@ -329,19 +330,25 @@ class _RetryMiddleware:
 
 
 class _AiohttpResponseStream(httpx.AsyncByteStream):
-    CHUNK_SIZE = 1024 * 16
+    CHUNK_SIZE = 16 * 1024
 
     def __init__(self, rsp: aiohttp.ClientResponse) -> None:
         self._rsp = rsp
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
-        with _map_aiohttp_exceptions():
-            async for chunk in self._rsp.content.iter_chunked(self.CHUNK_SIZE):
+        try:
+            while chunk := await self._rsp.content.read(self.CHUNK_SIZE):
                 yield chunk
+        except EofStream:
+            return
+        except Exception as exc:
+            raise _reexcept_aiohttp_to_httpx(exc) from exc
 
     async def aclose(self) -> None:
-        with _map_aiohttp_exceptions():
+        try:
             await self._rsp.__aexit__(None, None, None)
+        except Exception as exc:
+            raise _reexcept_aiohttp_to_httpx(exc) from exc
 
 
 def _httpx_to_yarl_url(url: httpx.URL) -> URL:
@@ -357,19 +364,15 @@ def _httpx_to_yarl_url(url: httpx.URL) -> URL:
     )
 
 
-@contextmanager
-def _map_aiohttp_exceptions() -> Iterator[None]:
-    try:
-        yield
-    except Exception as exc:
-        for aiohttp_exc, httpx_exc in _AIOHTTP_TO_HTTPX_EXCEPTIONS.items():
-            if isinstance(exc, aiohttp_exc):
-                raise httpx_exc(str(exc)) from exc
+def _reexcept_aiohttp_to_httpx(exc: Exception) -> Exception:
+    for aiohttp_exc, httpx_exc in _AIOHTTP_TO_HTTPX_EXCEPTIONS.items():
+        if isinstance(exc, aiohttp_exc):
+            return httpx_exc(str(exc))
 
-        if isinstance(exc, asyncio.TimeoutError):
-            raise httpx.TimeoutException(str(exc)) from exc
+    if isinstance(exc, asyncio.TimeoutError):
+        return httpx.TimeoutException(str(exc))
 
-        raise httpx.HTTPError(f'Unknown error: {exc!s}') from exc
+    return httpx.HTTPError(f'Unknown error: {exc!s}')
 
 
 _SKIP_AUTO_HEADERS = frozenset(
@@ -418,7 +421,8 @@ _AIOHTTP_TO_HTTPX_EXCEPTIONS: dict[type[Exception], type[Exception]] = {
 
 @memoize()  # Global pool for all HTTP requests
 def _get_transports(
-    v2: bool = False,
+    *,
+    aiohttp: bool = False,
 ) -> tuple[httpx.BaseTransport, httpx.AsyncBaseTransport]:
     limits = httpx.Limits(
         max_connections=env.MAX_CONNECTIONS,
@@ -432,7 +436,7 @@ def _get_transports(
         limits=limits,
         retries=env.RETRIES,
     )
-    if v2:
+    if aiohttp:
         async_ = AiohttpTransport(
             verify=env.SSL_VERIFY,
             max_connections=env.MAX_CONNECTIONS,
@@ -455,7 +459,7 @@ def get_clients(
     v2: bool = False,
 ) -> tuple[httpx.Client, httpx.AsyncClient]:
     base_url = str(base_url)
-    transport, atransport = _get_transports(v2)
+    transport, atransport = _get_transports(aiohttp=v2)
     sync = httpx.Client(
         timeout=timeout,
         follow_redirects=follow_redirects,
@@ -479,45 +483,36 @@ def get_ip_from_response(rsp: httpx.Response, /) -> str | None:
 
 
 @overload
-def raise_for_status(rsp: httpx.Response, /) -> _NoneFuture: ...
+def raise_for_status(rsp: httpx.Response, /) -> Awaitable[None]: ...
 @overload
 def raise_for_status(rsp: httpx.Response, /, eager: Literal[True]) -> None: ...
 
 
 def raise_for_status(
     rsp: httpx.Response, /, eager: bool = False
-) -> _NoneFuture | None:
+) -> Awaitable[None] | None:
     """Raise status error if one occured.
 
     Adds more context to `Response.raise_for_status` (like response content).
-    For sync response - call `.result()` on returned value first.
-    For async response - DON'T FORGET to `await` first.
+    For sync response - returns or raises on call.
+    For async response - returns or raises on call when response is read,
+    otherwise DON'T FORGET to `await`.
     """
-    if eager:
-        if rsp.is_success:
-            return None
-        if rsp.is_closed or not isinstance(rsp.stream, httpx.AsyncByteStream):
-            raise _new_status_error(rsp, rsp.read())
-        raise RuntimeError(
-            'Sync error handling on async not-yet-read response is forbidden'
-        )
-
     if rsp.is_success:
-        f = _NoneFuture()
-        f.set_result(None)
-        return f
+        return None if eager else Areturn(None)
 
     # closed response or any synchronous response
     if rsp.is_closed or not isinstance(rsp.stream, httpx.AsyncByteStream):
-        f = _NoneFuture()
-        f.set_exception(_new_status_error(rsp, rsp.read()))
-        return f
+        raise _new_status_error(rsp, rsp.read())
 
     # opened asynchronous response
-    async def _fail() -> None:
+    if eager:
+        raise RuntimeError('Attempted sync error handling on async response')
+
+    async def fail() -> Never:
         raise _new_status_error(rsp, await rsp.aread()) from None
 
-    return asyncio.ensure_future(_fail())
+    return fail()
 
 
 def _new_status_error(
@@ -545,7 +540,7 @@ client, aclient = get_clients()
 # ---------------------------------- others ----------------------------------
 
 
-def min_max(xs: Sequence[float], /) -> Sequence[float]:
+def min_max(xs: Sequence[float], /) -> list[float]:
     if not xs:
         return []
     lo, hi = min(xs), max(xs)

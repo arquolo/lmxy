@@ -18,7 +18,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Never, Union
+from typing import TYPE_CHECKING, Any, Union
 
 if TYPE_CHECKING:
     from llama_index.core.base.response.schema import (
@@ -32,6 +32,8 @@ if TYPE_CHECKING:
         StreamingAgentChatResponse,
     )
     from llama_index.core.schema import NodeWithScore
+
+from ._async import ayield, ayield_never, genreturn
 
 type Embedding = list[float]
 type SparseEncoding = tuple[list[int], Embedding]
@@ -66,14 +68,14 @@ class Tokens:
 
     def __await__(self) -> Generator[Any, Any, str]:
         if self.obj is None or isinstance(self.obj, str):
-            return _await(self.obj or '')
+            return genreturn(self.obj or '')
         return get_full_response(self.obj).__await__()
 
     def __aiter__(self) -> AsyncIterator[str]:
         if self.obj is None:
-            return _empty_aiter()
+            return ayield_never()
         if isinstance(self.obj, str):
-            return _ayield(self.obj) if self.obj else _empty_aiter()
+            return ayield(self.obj) if self.obj else ayield_never()
         return self.obj
 
 
@@ -82,17 +84,3 @@ async def get_full_response(tokens: AsyncIterable[str]) -> str:
     async for tk in tokens:
         buf.write(tk)
     return buf.getvalue()
-
-
-def _await[T](x: T) -> Generator[Never, Any, T]:
-    yield from ()
-    return x
-
-
-async def _ayield[T](x: T) -> AsyncIterator[T]:
-    yield x
-
-
-async def _empty_aiter() -> AsyncIterator[Never]:
-    return
-    yield
