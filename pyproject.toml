@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.6.7"
+version = "0.6.8"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.12, <3.15"
@@ -42,7 +42,7 @@ homepage = "https://github.com/arquolo/lmx"
 
 [project.optional-dependencies]
 base = [  # responses, rerank, embed
-    "llama-index-core >=0.13.0,<0.15",
+    "llama-index-core >=0.13.0, <0.15",
     "llama-index-utils-huggingface",
 ]
 tokenizer = [
@@ -54,7 +54,7 @@ fastembed = [
     # ! thus for py3.14 you'll need rustup (and msvc for windows).
     # ! rustup-init could be installed without admin privileges
     # ! For msvc without admin - use PortableBuildTools
-    "fastembed>=0.7.0,<0.9",
+    "fastembed >=0.7.0, <0.9",
 ]
 openailike = [
     "lmxy[base,tokenizer]",
@@ -63,7 +63,7 @@ openailike = [
 qdrant = [
     "lmxy[base,fastembed]",
     "grpcio",  # transitive
-    "qdrant-client>=1.15.1,<1.17",
+    "qdrant-client >=1.15.1, <1.19",
 ]
 bert_score = [
     "tqdm",
@@ -81,10 +81,10 @@ dev-core = [
     "flake8-pyproject",
     "flake8-simplify",
     "isort",
-    "mypy~=1.18",
+    "mypy~=2.0",
     "pytest~=8.0",
     "pytest-asyncio",
-    "ruff~=0.13.2",
+    "ruff~=0.15.0",
     "types-requests",
 ]
 dev = [
