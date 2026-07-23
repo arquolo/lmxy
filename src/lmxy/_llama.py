@@ -121,11 +121,7 @@ class QdrantVectorStore(BaseModel):
                     filters=qdrant_filters,
                     with_payload=with_payload,
                 )
-            rsp = (
-                (dq.unit() * alpha + sq.unit() * (1 - alpha)).limit(fuse_k)
-                if dq and sq
-                else (dq or sq)
-            )
+            rsp = sq.lerp(dq, alpha).limit(fuse_k) if dq and sq else (dq or sq)
             records = (await rsp) if rsp else []
 
         return [(record_to_llama(r), r['score']) for r in records]
