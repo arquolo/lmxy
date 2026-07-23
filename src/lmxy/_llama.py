@@ -1,20 +1,32 @@
 """Qdrant vector store, built on top of an existing Qdrant collection."""
 
-__all__ = ['QdrantVectorStore']
+__all__ = [
+    'QdrantVectorStore',
+    'llama_to_record',
+    'record_to_llama',
+]
 
 from collections.abc import Sequence
 from typing import cast
+from uuid import UUID
 
-from llama_index.core.schema import BaseNode, MetadataMode
+from llama_index.core.schema import (
+    BaseNode,
+    ImageNode,
+    IndexNode,
+    MetadataMode,
+    Node,
+    TextNode,
+)
 from llama_index.core.vector_stores import (
     MetadataFilter,
     MetadataFilters,
     VectorStoreQuery,
 )
 from pydantic import BaseModel
+from pydantic_core import from_json, to_json, to_jsonable_python
 from qdrant_client.http import models as rest
 
-from ._nodes import metadata_dict_to_node, node_to_metadata_dict
 from ._types import Embedding
 from .qdrant import EmbedRecord, Qdrant, Record
 
@@ -46,7 +58,7 @@ class QdrantVectorStore(BaseModel):
 
         Returns node IDs that were added to the index.
         """
-        records = [_node_to_record(n) for n in nodes]
+        records = [llama_to_record(n) for n in nodes]
         ids = await self.qdrant.add(records)
         assert all(isinstance(i, str) for i in ids)
         return cast('list[str]', ids)
@@ -116,7 +128,7 @@ class QdrantVectorStore(BaseModel):
             )
             records = (await rsp) if rsp else []
 
-        return [(_record_to_node(r), r['score']) for r in records]
+        return [(record_to_llama(r), r['score']) for r in records]
 
     # CRUD: delete
     async def delete(self, doc_id: str) -> None:
@@ -234,11 +246,49 @@ def _meta_to_condition(f: 'MetadataFilter') -> rest.Condition | None:
     return None
 
 
-# ------------------------ from native to llama index ------------------------
+# -------------------------- native <-> llama index --------------------------
 
 
-def _record_to_node(record: Record) -> BaseNode:
-    node = metadata_dict_to_node(record['data'], with_id=record['id_'])
+def record_to_llama(record: Record) -> BaseNode:
+    # See: llama_index.core.vector_stores.utils:metadata_dict_to_node
+    # Record: {
+    #   id_: ...,
+    #   data: {<node_type>, <node_content>, <doc_id>, <text>} | <metadata>,
+    #   embeddings: <embeddings>,
+    # }
+    # ->
+    # Node: <node_type>(
+    #   id_=...,
+    #   relationships={1: {node_id: <doc_id>}},
+    #   text=<text>,
+    #   metadata={embeddings: <embeddings>} | <metadata>,
+    #   **<node_content>,
+    # )
+    payload = record['data'].copy()
+    node_type = payload.pop('_node_type', '')
+    node_json = payload.pop('_node_content', None)
+    if node_json is None:
+        raise ValueError('Node content not found in metadata dict.')
+    node_dict = from_json(node_json)
+
+    id_ = record['id_']
+    node_dict['id_'] = str(id_) if isinstance(id_, UUID) else id_
+
+    if parent_id := payload.pop('doc_id', None):
+        node_dict.setdefault('relationships', {'1': {'node_id': parent_id}})
+
+    node_dict.pop('class_name', None)
+
+    if text := payload.pop('text', None):
+        node_dict['text'] = text
+
+    payload.pop('ref_doc_id', None)
+    payload.pop('document_id', None)
+    node_dict.setdefault('metadata', payload)
+
+    tp = _TYPES.get(node_type, TextNode)
+    node = tp(**node_dict)
+
     if (
         node.embedding is None
         and not node.metadata.get('embeddings')
@@ -251,11 +301,45 @@ def _record_to_node(record: Record) -> BaseNode:
     return node
 
 
-def _node_to_record(node: BaseNode) -> EmbedRecord:
-    r = EmbedRecord(id_=node.id_, data=node_to_metadata_dict(node))
+def llama_to_record(node: BaseNode) -> EmbedRecord:
+    # See: llama_index.core.vector_stores.utils:node_to_metadata_dict
+    # This is more storage-efficient reimplementation
+    # Node: <node_type>(
+    #   id_=...,
+    #   ref_doc_id: <doc_id>,
+    #   text=<text>,
+    #   metadata={embeddings: <embeddings>} | <metadata>,
+    #   **<node_content>,
+    # )
+    # ->
+    # Record: {
+    #   id_: ...,
+    #   data: {<node_type>, <node_content>, <doc_id>, <text>} | <metadata>,
+    #   embeddings: [...],
+    # }
 
-    if text := node.get_content(MetadataMode.EMBED).strip():
-        r['embed_text'] = text
+    # Using mode="json" to also serialize bytes (in images)
+    node_dict = node.model_dump(
+        mode='json', exclude={'embedding', 'metadata', 'relationships'}
+    )
+    data = to_jsonable_python(node.metadata, exclude={'embeddings'})
+
+    if (text := node_dict.get('text')) is not None:
+        data['text'] = text  # Move to top level
+
+    if 'doc_id' not in data and (doc_id := node.ref_doc_id) is not None:
+        data['doc_id'] = doc_id  # Useful for metadata filtering
+
+    data['_node_type'] = node.class_name()
+
+    # Remaining data, could be huge
+    content = to_json(node_dict, exclude={'class_name', 'text'}).decode()
+    data['_node_content'] = content
+
+    r = EmbedRecord(id_=node.id_, data=data)
+
+    if embed_text := node.get_content(MetadataMode.EMBED).strip():
+        r['embed_text'] = embed_text
 
     if (vec := node.embedding) is not None:
         r['embeddings'] = [vec]
@@ -263,3 +347,6 @@ def _node_to_record(node: BaseNode) -> EmbedRecord:
         r['embeddings'] = cast('list[Embedding]', vecs)
 
     return r
+
+
+_TYPES = {tp.class_name(): tp for tp in (Node, IndexNode, ImageNode)}

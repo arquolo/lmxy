@@ -13,12 +13,12 @@ from ._types import (
 )
 
 if TYPE_CHECKING:
+    from ._llama import QdrantVectorStore, llama_to_record, record_to_llama
     from ._responses import tokens_from_response, unpack_response
     from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
     from .qdrant import Qdrant
-    from .qdrant_llama import QdrantVectorStore
     from .rerank import Reranker
     from .tokenizer import get_tokenizer
 else:
@@ -32,7 +32,7 @@ else:
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
         '.qdrant': ['Qdrant'],
-        '.qdrant_llama': ['QdrantVectorStore'],
+        '._llama': ['QdrantVectorStore', 'llama_to_record', 'record_to_llama'],
         '.rerank': ['Reranker'],
         '.tokenizer': ['get_tokenizer'],
     }
@@ -68,7 +68,9 @@ __all__ = [
     'get_sparse_encoder',
     'get_tokenizer',
     'glue_reps',
+    'llama_to_record',
     'no_think',
+    'record_to_llama',
     'tokens_from_response',
     'trim_repetitions_at_end',
     'unpack_response',
