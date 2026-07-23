@@ -14,7 +14,7 @@ import asyncio
 import random
 import sys
 import urllib.error
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
@@ -540,7 +540,8 @@ client, aclient = get_clients()
 # ---------------------------------- others ----------------------------------
 
 
-def min_max(xs: Sequence[float], /) -> list[float]:
+def min_max(xs: Iterable[float], /) -> list[float]:
+    xs = list(xs)
     if not xs:
         return []
     lo, hi = min(xs), max(xs)

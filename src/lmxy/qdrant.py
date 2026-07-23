@@ -4,6 +4,7 @@ __all__ = ['Qdrant']
 
 import asyncio
 from collections.abc import Awaitable, Callable, Generator, Sequence
+from functools import partial
 from typing import Any, NotRequired, TypedDict, cast
 from uuid import UUID
 
@@ -312,11 +313,7 @@ class Qdrant(BaseModel):
 
         # `k` is effective only up to `dense_k+sparse_k`
         k = min(k, k_max)
-        q = (
-            (dq.unit() * alpha + sq.unit() * (1 - alpha)).limit(k)
-            if dq and sq
-            else (dq or sq)
-        )
+        q = sq.lerp(dq, alpha).limit(k) if dq and sq else (dq or sq)
         return (await q) if q else []
 
     def query1(
@@ -327,7 +324,7 @@ class Qdrant(BaseModel):
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
     ) -> '_Request':
-        async def call() -> Sequence[ScoredRecord]:
+        async def call() -> list[ScoredRecord]:
             points = await self.qd_query(
                 q, limit, threshold, filters=filters, with_payload=with_payload
             )
@@ -335,7 +332,7 @@ class Qdrant(BaseModel):
             _log_scores(rs)
             return rs
 
-        return _Request(call=call)
+        return _Request(call)
 
     async def qd_retrieve(
         self,
@@ -548,57 +545,48 @@ def _qd_to_record(
     return rec
 
 
-class _Request(BaseModel):
-    call: Callable[[], Awaitable[Sequence[ScoredRecord]]]
-
-    def __add__(self, rhs: '_Request') -> '_Request':
-        async def add() -> Sequence[ScoredRecord]:
-            rs1, rs2 = await asyncio.gather(self.call(), rhs.call())
-            if not (rs1 and rs2):
-                return rs1 or rs2
-            scores1 = {r['id_']: r['score'] for r in rs1}
-            scores2 = {r['id_']: r['score'] for r in rs2}
-            uniq = {r['id_']: r for r in [*rs1, *rs2]}
-            rs: list[ScoredRecord] = [
-                {**r, 'score': scores1.get(id_, 0) + scores2.get(id_, 0)}
-                for id_, r in uniq.items()
-            ]
-            _log_scores(rs, name='fused records')
-            return sorted(rs, key=lambda r: r['score'], reverse=True)
-
-        return _Request(call=add)
-
-    def __mul__(self, scale: float) -> '_Request':
-        assert scale >= 0
-
-        async def mul() -> Sequence[ScoredRecord]:
-            if scale == 0:
-                return []
-            rs = await self.call()
-            return [{**r, 'score': r['score'] * scale} for r in rs]
-
-        return _Request(call=mul)
-
-    def __rmul__(self, weight: float) -> '_Request':
-        return self * weight
+class _Request(partial[Awaitable[list[ScoredRecord]]]):
+    def __await__(self) -> Generator[Any, Any, list[ScoredRecord]]:
+        return self().__await__()
 
     def limit(self, n: int) -> '_Request':
-        async def trim() -> Sequence[ScoredRecord]:
-            rs = await self.call()
-            return rs[:n]
+        """`= self.scores[:n]`"""
+        return _Request(self._limit, n)
 
-        return _Request(call=trim)
+    def lerp(self, rhs: '_Request', t: float) -> '_Request':
+        """`= normalized(self.scores) * (1-t) + normalized(rhs.scores) * t`"""
+        return _Request(self._lerp, rhs, t)
 
-    def unit(self) -> '_Request':
-        async def norm() -> Sequence[ScoredRecord]:
-            rs = await self.call()
-            scores = min_max([r['score'] for r in rs])
-            return [{**r, 'score': x} for r, x in zip(rs, scores, strict=True)]
+    async def _limit(self, n: int) -> list[ScoredRecord]:
+        if n <= 0:
+            return []
+        rs = await self()
+        return rs[:n]
 
-        return _Request(call=norm)
+    async def _lerp(self, rhs: '_Request', t: float) -> list[ScoredRecord]:
+        if t <= 0:
+            return await self()
+        if t >= 1:
+            return await rhs()
+        rs1, rs2 = await asyncio.gather(self(), rhs())
+        if not (rs1 and rs2):
+            return rs1 or rs2
+        uniq = {r['id_']: r for r in [*rs1, *rs2]}
+        zeros = dict.fromkeys(uniq, 0.0)
+        xs1 = zeros | _min_max_scores(rs1)
+        xs2 = zeros | _min_max_scores(rs2)
+        rs: list[ScoredRecord] = [
+            {**r, 'score': (1 - t) * xs1[i] + t * xs2[i]}
+            for i, r in uniq.items()
+        ]
+        _log_scores(rs, name='fused records')
+        return sorted(rs, key=lambda r: r['score'], reverse=True)
 
-    def __await__(self) -> Generator[Any, Any, Sequence[ScoredRecord]]:
-        return self.call().__await__()
+
+def _min_max_scores(rs: Sequence[ScoredRecord]) -> dict[_Id, float]:
+    ids = [r['id_'] for r in rs]
+    xs = min_max(r['score'] for r in rs)
+    return dict(zip(ids, xs, strict=True))
 
 
 def _log_scores(rs: Sequence[ScoredRecord], name: str = 'records') -> None:
