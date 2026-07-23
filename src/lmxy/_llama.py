@@ -53,7 +53,7 @@ class QdrantVectorStore(BaseModel):
     qdrant: Qdrant
 
     # CRUD: create or update
-    async def add(self, nodes: Sequence['BaseNode'], /) -> Sequence[str]:
+    async def add(self, nodes: Sequence['BaseNode'], /) -> list[str]:
         """Add nodes with embeddings to Qdrant index.
 
         Returns node IDs that were added to the index.
@@ -72,7 +72,7 @@ class QdrantVectorStore(BaseModel):
         qdrant_filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
         dense_threshold: float | None = None,
-    ) -> Sequence['_ScoredNode']:
+    ) -> list['_ScoredNode']:
         """Query index for top k most similar nodes."""
         #  NOTE: users can pass in qdrant_filters
         # (nested/complicated filters) to override the default MetadataFilters

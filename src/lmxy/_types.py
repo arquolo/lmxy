@@ -38,7 +38,7 @@ from ._async import ayield, ayield_never, genreturn
 type Embedding = list[float]
 type SparseEncoding = tuple[list[int], Embedding]
 type BatchSparseEmbedding = list[SparseEncoding]
-type SparseEncode = Callable[[Sequence[str]], Sequence[SparseEncoding]]
+type SparseEncode = Callable[[Sequence[str]], list[SparseEncoding]]
 
 type LlmResponse = Union[  # noqa: UP007
     'Response',

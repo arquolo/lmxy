@@ -107,8 +107,8 @@ class Embedder(BaseEmbedding):
     _text_key: str = PrivateAttr()
     _ssemlock: threading.Semaphore = PrivateAttr()
     _asemlock: asyncio.Semaphore = PrivateAttr()
-    _embed: Callable[[Sequence[str]], Sequence[Embedding]] = PrivateAttr()
-    _aembed: Callable[[Sequence[str]], Awaitable[Sequence[Embedding]]] = (
+    _embed: Callable[[Sequence[str]], list[Embedding]] = PrivateAttr()
+    _aembed: Callable[[Sequence[str]], Awaitable[list[Embedding]]] = (
         PrivateAttr()
     )
 
@@ -241,7 +241,7 @@ class Embedder(BaseEmbedding):
     ) -> list[Embedding]:
         """Get text embeddings async."""
         texts = self._with_inst(texts, mode='text')
-        return list(await self._aembed(texts))
+        return await self._aembed(texts)
 
     def _embed_impl(self, texts: Sequence[str]) -> list[Embedding]:
         if not texts:
@@ -277,7 +277,7 @@ class Embedder(BaseEmbedding):
 
     def _with_inst(
         self, texts: Sequence[str], mode: Literal['query', 'text']
-    ) -> Sequence[str]:
+    ) -> list[str]:
         inst = self._instructions.get(mode, '')
         return [f'{inst} {t}'.strip() for t in texts]
 

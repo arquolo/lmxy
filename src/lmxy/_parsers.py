@@ -181,7 +181,7 @@ def trim_repetitions_at_end_[T](
     min_window: int = 1,
     max_window: int = 10,
     threshold: int = 40,
-) -> Sequence[T]:
+) -> list[T]:
     assert 1 <= min_window <= max_window
     slen = len(s)
     cut = -1
@@ -194,4 +194,4 @@ def trim_repetitions_at_end_[T](
             if s[-i - window : -i] != ref:
                 break
             cut = max(cut, i)
-    return s[:-cut] if cut >= threshold else s
+    return list(s[:-cut] if cut >= threshold else s)

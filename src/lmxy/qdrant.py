@@ -101,11 +101,11 @@ class Qdrant(BaseModel):
 
     _update: Callable[
         [Sequence[EmbedRecord | _Id]],
-        Awaitable[Sequence[_Id]],
+        Awaitable[list[_Id]],
     ] = PrivateAttr()
     _qd_query: Callable[
         [Sequence[rest.QueryRequest]],
-        Awaitable[Sequence[Sequence[rest.ScoredPoint]]],
+        Awaitable[list[Sequence[rest.ScoredPoint]]],
     ] = PrivateAttr()
 
     _is_initialized: bool = PrivateAttr()
@@ -270,7 +270,7 @@ class Qdrant(BaseModel):
         ids: Sequence[_Id],
         *,
         with_payload: Sequence[str] | bool = True,
-    ) -> Sequence[ScoredRecord]:
+    ) -> list[ScoredRecord]:
         points = await self.qd_retrieve(ids, with_payload=with_payload)
         return [_qd_to_record(pt, self.dense_field_name) for pt in points]
 
@@ -282,7 +282,7 @@ class Qdrant(BaseModel):
         fuse: tuple[int, float] = (1, 0.5),
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
-    ) -> Sequence[ScoredRecord]:
+    ) -> list[ScoredRecord]:
         dq = sq = None
         k, alpha = fuse
         assert 0 <= alpha <= 1
@@ -352,7 +352,7 @@ class Qdrant(BaseModel):
         threshold: float | None = None,
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
-    ) -> Sequence[rest.Record | rest.ScoredPoint]:
+    ) -> list[rest.Record | rest.ScoredPoint]:
         if not limit or not await self.is_initialized():
             return []
 
@@ -393,7 +393,7 @@ class Qdrant(BaseModel):
             with_payload=with_payload,
         )
         [points] = await self._qd_query([req])
-        return points
+        return list(points)
 
     # CRUD: delete
     async def delete_by(self, value: str, key: str) -> None:
@@ -417,7 +417,7 @@ class Qdrant(BaseModel):
 
     async def _ll_update(
         self, records: Sequence[EmbedRecord | _Id], /
-    ) -> Sequence[_Id]:
+    ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
         ids: list[_Id] = []
         add_recs: list[EmbedRecord] = []
@@ -467,7 +467,7 @@ class Qdrant(BaseModel):
 
     async def _ll_qd_query(
         self, reqs: Sequence[rest.QueryRequest], /
-    ) -> Sequence[Sequence[rest.ScoredPoint]]:
+    ) -> list[Sequence[rest.ScoredPoint]]:
         if not reqs:
             return []
         qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
