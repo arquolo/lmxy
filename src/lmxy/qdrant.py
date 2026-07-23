@@ -3,13 +3,13 @@
 __all__ = ['Qdrant']
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 from uuid import UUID
 
 from glow import astreaming
 from grpc import RpcError
+from loguru import logger
 from pydantic import BaseModel, PrivateAttr
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.conversions.common_types import QuantizationConfig
@@ -26,11 +26,10 @@ _Id = int | str | UUID
 # embedding/text, top K, score threshold
 type DenseQuery = tuple[Embedding, int, float | None]
 type SparseQuery = tuple[str, int]
-type _QueryPayload = tuple[Embedding | rest.SparseVector, int, float | None]
 
 _SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, rest.Modifier.IDF)
 _LOCK = asyncio.Lock()
-logger = logging.getLogger(__name__)
+_log = logger.opt(depth=1)
 
 
 class Record(TypedDict):
@@ -181,7 +180,7 @@ class Qdrant(BaseModel):
         except (RpcError, ValueError, UnexpectedResponse) as exc:
             if 'already exists' not in str(exc):
                 raise exc  # noqa: TRY201
-            logger.warning(
+            _log.warning(
                 'Collection %s already exists, skipping collection creation.',
                 self.collection_name,
             )
@@ -228,14 +227,14 @@ class Qdrant(BaseModel):
         sparse = info.config.params.sparse_vectors
         if isinstance(sparse, dict) and self.sparse_field_name in sparse:
             if not self.sparse_query_fn:
-                logger.warning(
+                _log.warning(
                     'Collection %s support '
                     'sparse search, but neither '
                     'sparse_query_fn nor sparse_model was provided',
                     self.collection_name,
                 )
             if not self.sparse_doc_fn:
-                logger.warning(
+                _log.warning(
                     'Collection %s support '
                     'sparse search, but neither '
                     'sparse_doc_fn nor sparse_model was provided',
@@ -607,4 +606,4 @@ def _log_scores(rs: Sequence[ScoredRecord], name: str = 'records') -> None:
     if not any(scores):
         return
     n, lo, hi = len(scores), min(scores), max(scores)
-    logger.info(f'Retrieved {n} {name} with score: {lo:.3g} .. {hi:.3g}')
+    _log.info(f'Retrieved {n} {name} with score: {lo:.3g} .. {hi:.3g}')

@@ -9,11 +9,11 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import batched
-from logging import getLogger
 from math import log1p
 from typing import NamedTuple
 
 import torch
+from loguru import logger
 from torch import Tensor
 from torch.nn.utils.rnn import pad_sequence
 from tqdm.auto import tqdm
@@ -26,8 +26,6 @@ from transformers import (
 )
 
 from .tokenizer import get_tf_tokenizer
-
-logger = getLogger(__name__)
 
 
 class _Embedding(NamedTuple):
