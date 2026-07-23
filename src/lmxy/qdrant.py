@@ -261,8 +261,7 @@ class Qdrant(BaseModel):
 
     # CRUD: create
     async def add(self, records: Sequence[EmbedRecord]) -> list[_Id]:
-        ids = await self._update(records)
-        return list(ids)
+        return await self._update(records)
 
     # CRUD: read
     async def retrieve(

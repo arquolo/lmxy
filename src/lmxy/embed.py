@@ -224,7 +224,7 @@ class Embedder(BaseEmbedding):
     def _get_text_embeddings(self, texts: Sequence[str]) -> list[Embedding]:
         """Get text embeddings."""
         texts = self._with_inst(texts, mode='text')
-        return list(self._embed(texts))
+        return self._embed(texts)
 
     async def _aget_query_embedding(self, query: str) -> Embedding:
         """Get query embedding async."""
