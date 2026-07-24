@@ -1,7 +1,7 @@
 __all__ = ['Reranker']
 
 from asyncio import Future
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 
 import httpx
@@ -152,7 +152,7 @@ class QueryNodeSimilarityEvaluator(BaseModel):
         self,
         query: str,
         *nodes: BaseNode,
-    ) -> Iterator[tuple[httpx.Request, Future[httpx.Response], list[float]]]:
+    ) -> Generator[tuple[httpx.Request, Future[httpx.Response], list[float]]]:
         with self.callback_manager.event(
             CBEventType.RERANKING,
             payload={

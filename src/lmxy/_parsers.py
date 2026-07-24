@@ -2,7 +2,7 @@ __all__ = ['glue_reps', 'no_think', 'trim_repetitions_at_end', 'wordify']
 
 import re
 import string
-from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 
 _THINK_START = '<think>'
 _THINK_STOP = '</think>'
@@ -33,7 +33,7 @@ def no_think[S: AsyncIterable[str] | str](s: S) -> S:
     return _astrip(_ahide_think(s))  # type: ignore[return-value]
 
 
-async def _ahide_think(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
+async def _ahide_think(tokens: AsyncIterable[str]) -> AsyncGenerator[str]:
     """Remove `<think>...</think>` blocks."""
     buf = ''
     answering, tag, partial_tag = _NEXT_STATE[False]
@@ -57,7 +57,7 @@ async def _ahide_think(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
         yield buf
 
 
-async def _astrip(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
+async def _astrip(tokens: AsyncIterable[str]) -> AsyncGenerator[str]:
     """Strip chunked line.
 
     - Skips leading and trailing whitespaces and line breaks
@@ -104,7 +104,7 @@ def _astrip_step(buf: str, num_breaks: int) -> tuple[str, str, int]:
     return out, buf, num_breaks
 
 
-async def wordify(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
+async def wordify(tokens: AsyncIterable[str]) -> AsyncGenerator[str]:
     """Repack stream of tokens with splits on words and punctuation"""
     tail = ''
     async for tok in tokens:
@@ -130,7 +130,7 @@ async def wordify(tokens: AsyncIterable[str]) -> AsyncIterator[str]:
         yield tail
 
 
-async def glue_reps(tks: AsyncIterable[str]) -> AsyncIterable[str]:
+async def glue_reps(tks: AsyncIterable[str]) -> AsyncGenerator[str]:
     """Join consecutive alphanumerics or duplicate punctuation chars"""
     buf = ''
     async for tk in tks:
@@ -148,7 +148,7 @@ async def trim_repetitions_at_end[T](
     tokens: AsyncIterable[T],
     min_window: int = 10,
     max_window: int = 40,
-) -> AsyncIterator[T]:
+) -> AsyncGenerator[T]:
     """Finds repetitions of token sequence and cuts on it.
 
     TODO: optimize for large window sizes. Now it's big O(n w^2).

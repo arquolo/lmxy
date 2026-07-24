@@ -5,18 +5,8 @@ import threading
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Literal
 
+import httpx
 from glow import astreaming, streaming
-from httpx import (
-    URL,
-    AsyncClient,
-    Client,
-    ConnectError,
-    HTTPStatusError,
-    ReadError,
-    Request,
-    Response,
-    Timeout,
-)
 from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.utils.huggingface import (
     get_query_instruct_for_model_name,
@@ -32,8 +22,8 @@ _text_keys = ['input', 'inputs']
 
 
 def _too_many_requests(e: BaseException) -> bool:
-    return isinstance(e, ReadError) or (
-        isinstance(e, HTTPStatusError) and e.response.status_code == 429
+    return isinstance(e, httpx.ReadError) or (
+        isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429
     )
 
 
@@ -99,8 +89,8 @@ class Embedder(BaseEmbedding):
     latency: float = 0  # >0 to enable automatic batching
     max_chars: int = 100_000  # >0 to limit N chars in single request
 
-    client: Client = client
-    aclient: AsyncClient = aclient
+    client: httpx.Client = client
+    aclient: httpx.AsyncClient = aclient
 
     _instructions: dict[str, str] = PrivateAttr()
     _endpoint: str = PrivateAttr()
@@ -181,7 +171,7 @@ class Embedder(BaseEmbedding):
         except StopIteration:
             return
 
-    def _handshake(self) -> Generator[Request, None, None]:
+    def _handshake(self) -> Generator[httpx.Request, None, None]:
         # Try to find working combo
         errors: list[Exception] = []
         try:
@@ -192,7 +182,7 @@ class Embedder(BaseEmbedding):
                     try:
                         # Raw call, to not retry
                         yield req
-                    except HTTPStatusError as exc:
+                    except httpx.HTTPStatusError as exc:
                         if exc.response.status_code == 404:  # Missing url
                             break  # Next `_text_key` will fail too, skip it.
                     except Exception as exc:  # noqa: BLE001
@@ -200,7 +190,7 @@ class Embedder(BaseEmbedding):
                     else:
                         return
 
-        except ConnectError as exc:
+        except httpx.ConnectError as exc:
             raise RuntimeError(f'Cannot connect to {self.base_url!r}') from exc
         else:
             raise ExceptionGroup(
@@ -255,12 +245,12 @@ class Embedder(BaseEmbedding):
         req = self._request(texts)
         return await self._retry(self._asend, req)
 
-    def _send(self, req: Request) -> list[Embedding]:
+    def _send(self, req: httpx.Request) -> list[Embedding]:
         with self._ssemlock:
             rsp = self.client.send(req)
             return _handle_response(rsp)
 
-    async def _asend(self, req: Request) -> list[Embedding]:
+    async def _asend(self, req: httpx.Request) -> list[Embedding]:
         async with self._asemlock:
             rsp = await self.aclient.send(req)
             return _handle_response(rsp)
@@ -281,7 +271,7 @@ class Embedder(BaseEmbedding):
         inst = self._instructions.get(mode, '')
         return [f'{inst} {t}'.strip() for t in texts]
 
-    def _request(self, texts: Sequence[str]) -> Request:
+    def _request(self, texts: Sequence[str]) -> httpx.Request:
         if not self._endpoint or not self._text_key:
             raise RuntimeError(
                 'Embedder is not initialized. `handshake` was never called'
@@ -292,16 +282,16 @@ class Embedder(BaseEmbedding):
         elif self.auth_token is not None:
             headers['Authorization'] = self.auth_token
 
-        return Request(
+        return httpx.Request(
             'POST',
-            URL(self.base_url).join(self._endpoint),
+            httpx.URL(self.base_url).join(self._endpoint),
             headers=headers,
             json={'model': self.model_name, self._text_key: texts},
-            extensions={'timeout': Timeout(self.timeout).as_dict()},
+            extensions={'timeout': httpx.Timeout(self.timeout).as_dict()},
         )
 
 
-def _handle_response(response: Response) -> list[Embedding]:
+def _handle_response(response: httpx.Response) -> list[Embedding]:
     raise_for_status(response, eager=True)
     data = response.content
     match _parse_embeddings(data):

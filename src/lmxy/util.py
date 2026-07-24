@@ -14,7 +14,7 @@ import asyncio
 import random
 import sys
 import urllib.error
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
 from datetime import timedelta
 from functools import update_wrapper
 from inspect import iscoroutinefunction
@@ -335,7 +335,7 @@ class _AiohttpResponseStream(httpx.AsyncByteStream):
     def __init__(self, rsp: aiohttp.ClientResponse) -> None:
         self._rsp = rsp
 
-    async def __aiter__(self) -> AsyncIterator[bytes]:
+    async def __aiter__(self) -> AsyncGenerator[bytes]:
         try:
             while chunk := await self._rsp.content.read(self.CHUNK_SIZE):
                 yield chunk
@@ -436,6 +436,7 @@ def _get_transports(
         limits=limits,
         retries=env.RETRIES,
     )
+    async_: httpx.AsyncBaseTransport
     if aiohttp:
         async_ = AiohttpTransport(
             verify=env.SSL_VERIFY,

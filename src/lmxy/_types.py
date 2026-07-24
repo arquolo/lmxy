@@ -55,16 +55,16 @@ type NativeResponse = Union[  # noqa: UP007
 ]
 type LlmFunction[**P] = Callable[
     P,
-    Awaitable[LlmResponse | NativeResponse | AsyncIterator[str]]
+    Awaitable[LlmResponse | NativeResponse | AsyncIterable[str]]
     | NativeResponse
-    | AsyncIterator[str],
+    | AsyncIterable[str],
 ]
 type Tokenize = Callable[[str], list[Any]]
 
 
 @dataclass(frozen=True, slots=True)
 class Tokens:
-    obj: AsyncIterator[str] | str | None = None
+    obj: AsyncIterable[str] | str | None = None
 
     def __await__(self) -> Generator[Any, Any, str]:
         if self.obj is None or isinstance(self.obj, str):
@@ -76,7 +76,7 @@ class Tokens:
             return ayield_never()
         if isinstance(self.obj, str):
             return ayield(self.obj) if self.obj else ayield_never()
-        return self.obj
+        return aiter(self.obj)
 
 
 async def get_full_response(tokens: AsyncIterable[str]) -> str:

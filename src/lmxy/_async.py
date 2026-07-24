@@ -1,7 +1,6 @@
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
-    AsyncIterator,
     Callable,
     Generator,
     Iterable,
@@ -27,11 +26,11 @@ def genreturn[T](x: T) -> Generator[Never, Any, T]:
     return x
 
 
-async def ayield[T](x: T) -> AsyncIterator[T]:
+async def ayield[T](x: T) -> AsyncGenerator[T]:
     yield x
 
 
-async def ayield_never() -> AsyncIterator[Never]:
+async def ayield_never() -> AsyncGenerator[Never]:
     never: Never
     for never in ():
         assert_never(never)

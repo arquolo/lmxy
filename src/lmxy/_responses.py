@@ -1,6 +1,6 @@
 __all__ = ['tokens_from_response', 'unpack_response']
 
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterable, Awaitable
 
 from llama_index.core.base.response.schema import (
     AsyncStreamingResponse,
@@ -30,7 +30,7 @@ async def unpack_response[**P](
         return ret
     if isinstance(ret, Tokens):
         return ret, []
-    if isinstance(ret, AsyncIterator):
+    if isinstance(ret, AsyncIterable):
         return Tokens(ret), []
     if isinstance(ret, str):
         return Tokens(ret), []
