@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.7.3"
+version = "0.7.4"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.12, <3.15"
@@ -30,7 +30,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp~=3.10",
-    "glow~=0.15.34",
+    "glow~=0.15.35",
     "httpx",
     "pydantic~=2.10",
     "pydantic-settings",

@@ -69,9 +69,9 @@ class Qdrant(BaseModel):
     collection_name: str
     aclient: AsyncQdrantClient
     upsert_timeout: float | None = None  # enable to batch upserts
-    upsert_batch_size: int | None = 64
+    upsert_batch_size: int = 64
     query_timeout: float | None = None  # enable to batch upserts
-    query_batch_size: int | None = 64
+    query_batch_size: int = 64
     retries: int | None = 3  # None = retry forever
 
     # Collection construction parameters
