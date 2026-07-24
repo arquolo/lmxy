@@ -3,16 +3,18 @@
 __all__ = ['Qdrant']
 
 import asyncio
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
 from functools import partial
 from typing import Any, NotRequired, TypedDict, cast
 from uuid import UUID
 
 from glow import astreaming
 from grpc import RpcError
+from httpx import Timeout
 from loguru import logger
 from pydantic import BaseModel, PrivateAttr
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.async_qdrant_remote import AsyncQdrantRemote
 from qdrant_client.conversions.common_types import QuantizationConfig
 from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
 from qdrant_client.http import models as rest
@@ -139,6 +141,91 @@ class Qdrant(BaseModel):
         modifier = _SPARSE_MODIFIERS.get(self.sparse_model or '')
         self.sparse_config.modifier = modifier
         self._is_initialized = False
+
+    @classmethod
+    def create(
+        cls,
+        collection_name: str,
+        vector_size: int,
+        # connection
+        host: str,
+        port: int = 6333,
+        grpc_port: int = 6334,
+        prefer_grpc: bool = False,
+        retries: int | None = None,
+        # sparse model
+        sparse_model: str = 'Qdrant/bm25',
+        sparse_model_kwargs: dict[str, Any] | None = None,
+        # speed
+        upsert_timeout: float = 0.01,
+        query_timeout: float = 0.01,
+        upsert_batch_size: int = 10,
+        query_batch_size: int = 10,
+        shard_number: int = 0,
+        # collection options
+        tenant_fields: Iterable[str] = (),
+    ) -> 'Qdrant':
+        aclient = AsyncQdrantClient(
+            port=port,
+            grpc_port=grpc_port,
+            prefer_grpc=prefer_grpc,
+            host=host,
+        )
+        assert isinstance(aclient._client, AsyncQdrantRemote)
+        aclient._client.http.client._async_client.timeout = Timeout(None)
+
+        dense_config = rest.VectorParams(
+            size=vector_size,
+            distance=rest.Distance.COSINE,
+            on_disk=True,
+            datatype=rest.Datatype.FLOAT32,
+        )
+        hnsw_config = rest.HnswConfigDiff(
+            # Number of edges per node (16).
+            # 12-16, higher = more accuracy / more memory.
+            m=0,
+            payload_m=32,
+            # Size of the dynamic candidate list during construction (100).
+            # 100-200, higher = better quality / slower construct.
+            ef_construct=64,
+            # Threshold for using HNSW vs exhaustive search (10000)
+            # 5000-20000 depending on vector dimensions.
+            full_scan_threshold=10_000,
+            on_disk=False,
+        )
+        optimizers_config = rest.OptimizersConfigDiff(
+            flush_interval_sec=5,
+            # When to start building index (20000), 10k-20k
+            indexing_threshold=20_000,
+            # When to switch to disk-based storage (None), 2-5x indexing
+            memmap_threshold=50_000,
+            # Target number of segments (0).
+            # 3-7, higher = faster updates / slower search.
+            default_segment_number=4,
+            # GC thresholds
+            vacuum_min_vector_number=1_000,  # as count per segment
+            deleted_threshold=0.2,  # fraction of segment
+        )
+
+        return cls(
+            collection_name=collection_name,
+            aclient=aclient,
+            # speed
+            upsert_timeout=upsert_timeout,
+            query_timeout=query_timeout,
+            upsert_batch_size=upsert_batch_size,
+            query_batch_size=query_batch_size,
+            retries=retries,
+            # collection construction
+            dense_config=dense_config,
+            shard_number=shard_number,  # To allow parallel indexing
+            hnsw_config=hnsw_config,
+            tenant_fields=list(tenant_fields),
+            optimizers_config=optimizers_config,
+            # sparsity
+            sparse_model=sparse_model,
+            sparse_model_kwargs=sparse_model_kwargs or {},
+        )
 
     async def initialize(self, vector_size: int) -> None:
         if self._is_initialized:
