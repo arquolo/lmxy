@@ -3,9 +3,8 @@
 __all__ = ['Qdrant']
 
 import asyncio
-from collections.abc import Awaitable, Callable, Generator, Sequence
-from functools import partial
-from typing import Any, NotRequired, TypedDict, cast
+from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
+from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
 from glow import astreaming
@@ -27,6 +26,7 @@ _Id = int | str | UUID
 # embedding/text, top K, score threshold
 type DenseQuery = tuple[Embedding, int, float | None]
 type SparseQuery = tuple[str, int]
+type FusionMode = Literal['hsf', 'rrf', 'dbsf']
 
 _SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, rest.Modifier.IDF)
 _LOCK = asyncio.Lock()
@@ -281,6 +281,7 @@ class Qdrant(BaseModel):
         fuse: tuple[int, float] = (1, 0.5),
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
+        mode: FusionMode = 'hsf',
     ) -> list[ScoredRecord]:
         dq = sq = None
         k, alpha = fuse
@@ -312,7 +313,7 @@ class Qdrant(BaseModel):
 
         # `k` is effective only up to `dense_k+sparse_k`
         k = min(k, k_max)
-        q = sq.lerp(dq, alpha).limit(k) if dq and sq else (dq or sq)
+        q = sq.hybrid(dq, alpha, k, mode=mode) if dq and sq else (dq or sq)
         return (await q) if q else []
 
     def query1(
@@ -323,15 +324,11 @@ class Qdrant(BaseModel):
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
     ) -> '_Request':
-        async def call() -> list[ScoredRecord]:
-            points = await self.qd_query(
-                q, limit, threshold, filters=filters, with_payload=with_payload
-            )
-            rs = [_qd_to_record(pt, self.dense_field_name) for pt in points]
-            _log_scores(rs)
-            return rs
-
-        return _Request(call)
+        return _Request(
+            lambda: self._make_qd_query(q, limit, threshold, filters=filters),
+            self,
+            with_payload=with_payload,
+        )
 
     async def qd_retrieve(
         self,
@@ -352,8 +349,23 @@ class Qdrant(BaseModel):
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
     ) -> list[rest.Record | rest.ScoredPoint]:
+        if isinstance(with_payload, Sequence):
+            with_payload = list(with_payload)
+        ptss = await self._resolve(
+            lambda: self._make_qd_query(q, limit, threshold, filters=filters),
+            with_payload=with_payload,
+        )
+        return list(ptss[0]) if ptss else []
+
+    async def _make_qd_query(
+        self,
+        q: str | Embedding,
+        limit: int = 1,
+        threshold: float | None = None,
+        filters: rest.Filter | None = None,
+    ) -> rest.Prefetch | None:
         if not limit or not await self.is_initialized():
-            return []
+            return None
 
         vec: Embedding | rest.SparseVector
         if isinstance(q, str):
@@ -372,27 +384,13 @@ class Qdrant(BaseModel):
             vec = q
             using = self.dense_field_name
 
-        # TODO: possible optimization.
-        # Use prefetch={filter=filter_, lookup_from=<other collection>}
-        #   and no filter in QueryRequest itself,
-        # or call scroll first.
-        # But for this we need to ensure that limit is infinite,
-        #  otherwise we should use another storage for filters.
-
-        # TODO: handle MMR in qdrant
-
-        if isinstance(with_payload, Sequence):
-            with_payload = list(with_payload)
-        req = rest.QueryRequest(
+        return rest.Prefetch(
             query=vec,
             using=using,
             filter=filters,
             score_threshold=threshold,
             limit=limit,
-            with_payload=with_payload,
         )
-        [points] = await self._qd_query([req])
-        return list(points)
 
     # CRUD: delete
     async def delete_by(self, value: str, key: str) -> None:
@@ -413,6 +411,38 @@ class Qdrant(BaseModel):
             self._is_initialized = False
 
     # low levels
+
+    async def _resolve(
+        self,
+        *subqueries: Callable[[], Awaitable[rest.Prefetch | None]],
+        with_payload: list[str] | bool = True,
+        query: rest.FusionQuery | rest.RrfQuery | None = None,
+        limit: int = 1,
+    ) -> list[Sequence[rest.ScoredPoint]]:
+        prefetches = [
+            p for p in await asyncio.gather(*(cr() for cr in subqueries)) if p
+        ]
+        if query is not None and len(prefetches) > 1:
+            req = rest.QueryRequest(
+                prefetch=list(prefetches),
+                query=query,
+                limit=limit,
+                with_payload=with_payload,
+            )
+            reqs = [req]
+        else:
+            reqs = [
+                rest.QueryRequest(
+                    query=p.query,
+                    using=p.using,
+                    filter=p.filter,
+                    score_threshold=p.score_threshold,
+                    limit=p.limit,
+                    with_payload=with_payload,
+                )
+                for p in prefetches
+            ]
+        return [pts for pts in await self._qd_query(reqs) if pts]
 
     async def _ll_update(
         self, records: Sequence[EmbedRecord | _Id], /
@@ -544,52 +574,126 @@ def _qd_to_record(
     return rec
 
 
-class _Request(partial[Awaitable[list[ScoredRecord]]]):
+class _Request:
+    def __init__(
+        self,
+        query: Callable[[], Awaitable[rest.Prefetch | None]],
+        qd: Qdrant,
+        with_payload: Sequence[str] | bool = True,
+    ) -> None:
+        self.query = query
+        self.qd = qd
+        if isinstance(with_payload, Sequence):
+            with_payload = list(with_payload)
+        self.with_payload = with_payload
+
     def __await__(self) -> Generator[Any, Any, list[ScoredRecord]]:
-        return self().__await__()
+        return self.acall().__await__()
 
-    def limit(self, n: int) -> '_Request':
-        """`= self.scores[:n]`"""
-        return _Request(self._limit, n)
+    async def hybrid(
+        self,
+        other: '_Request',
+        t: float = 0.5,
+        limit: int = 1,
+        mode: FusionMode = 'hsf',
+        rrf_k: int | None = None,
+    ) -> list[ScoredRecord]:
+        match mode:
+            case 'hsf':
+                return await self.hsf(other, t, limit)
+            case 'rrf':
+                return await self._fuse(
+                    other,
+                    rest.RrfQuery(rrf=rest.Rrf(k=rrf_k, weights=[1 - t, t])),
+                    limit=limit,
+                )
+            case 'dbsf':
+                return await self._fuse(
+                    other,
+                    rest.FusionQuery(fusion=rest.Fusion.DBSF),
+                    limit=limit,
+                )
+        raise NotImplementedError
 
-    def lerp(self, rhs: '_Request', t: float) -> '_Request':
-        """`= normalized(self.scores) * (1-t) + normalized(rhs.scores) * t`"""
-        return _Request(self._lerp, rhs, t)
-
-    async def _limit(self, n: int) -> list[ScoredRecord]:
-        if n <= 0:
+    async def _fuse(
+        self,
+        other: '_Request',
+        query: rest.FusionQuery | rest.RrfQuery,
+        limit: int = 1,
+    ) -> list[ScoredRecord]:
+        if limit <= 0:
             return []
-        rs = await self()
-        return rs[:n]
+        ptss = await self.qd._resolve(
+            self.query,
+            other.query,
+            with_payload=self.with_payload,
+            query=query,
+            limit=limit,
+        )
+        if not ptss:
+            return []
+        [pts] = ptss
+        _log_scores(pts)
+        return [_qd_to_record(pt) for pt in pts]
 
-    async def _lerp(self, rhs: '_Request', t: float) -> list[ScoredRecord]:
-        if t <= 0:
-            return await self()
-        if t >= 1:
-            return await rhs()
-        rs1, rs2 = await asyncio.gather(self(), rhs())
-        if not (rs1 and rs2):
-            return rs1 or rs2
-        uniq = {r['id_']: r for r in [*rs1, *rs2]}
-        zeros = dict.fromkeys(uniq, 0.0)
-        xs1 = zeros | _min_max_scores(rs1)
-        xs2 = zeros | _min_max_scores(rs2)
-        rs: list[ScoredRecord] = [
-            {**r, 'score': (1 - t) * xs1[i] + t * xs2[i]}
-            for i, r in uniq.items()
-        ]
-        _log_scores(rs, name='fused records')
-        return sorted(rs, key=lambda r: r['score'], reverse=True)
+    async def hsf(
+        self,
+        other: '_Request',
+        t: float = 0.5,
+        limit: int = 1,
+    ) -> list[ScoredRecord]:
+        """
+        `= (normalized(self) * (1-t) + normalized(other) * t)[:n]`
+        """
+        if limit <= 0:
+            return []
+        fns = [self.query] if t < 1 else []
+        fns = [*fns, other.query] if t > 0 else fns
+        if not fns:
+            return []
+        ptss = await self.qd._resolve(*fns, with_payload=self.with_payload)
+        if not ptss:
+            return []
+        if len(ptss) == 1:
+            [pts] = ptss
+        else:
+            [lhs, rhs] = ptss
+            uniq = {r.id: r for r in [*lhs, *rhs]}
+            zeros = dict.fromkeys(uniq, 0.0)
+            pts1 = zeros | _min_max_scores(lhs)
+            pts2 = zeros | _min_max_scores(rhs)
+            pts = [
+                p.model_copy(update={'score': (1 - t) * pts1[i] + t * pts2[i]})
+                for i, p in uniq.items()
+            ]
+
+        pts = sorted(pts, key=lambda p: p.score, reverse=True)[:limit]
+        _log_scores(pts, name='fused records')
+        return [_qd_to_record(pt) for pt in pts]
+
+    async def acall(self) -> list[ScoredRecord]:
+        ptss = await self.qd._resolve(
+            self.query, with_payload=self.with_payload
+        )
+        if not ptss:
+            return []
+        [points] = ptss
+        _log_scores(points)
+        return [_qd_to_record(pt) for pt in points]
 
 
-def _min_max_scores(rs: Sequence[ScoredRecord]) -> dict[_Id, float]:
-    ids = [r['id_'] for r in rs]
-    xs = min_max(r['score'] for r in rs)
-    return dict(zip(ids, xs, strict=True))
+def _min_max_scores(
+    pts: Sequence[rest.ScoredPoint],
+) -> dict[rest.ExtendedPointId, float]:
+    return dict(
+        zip([p.id for p in pts], min_max(p.score for p in pts), strict=True)
+    )
 
 
-def _log_scores(rs: Sequence[ScoredRecord], name: str = 'records') -> None:
-    scores = [r['score'] for r in rs]
+def _log_scores(
+    pts: Sequence[rest.ScoredPoint], name: str = 'records'
+) -> None:
+    scores = [p.score for p in pts]
     if not any(scores):
         return
     n, lo, hi = len(scores), min(scores), max(scores)

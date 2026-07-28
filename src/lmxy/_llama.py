@@ -28,7 +28,7 @@ from pydantic_core import from_json, to_json, to_jsonable_python
 from qdrant_client.http import models as rest
 
 from ._types import Embedding
-from .qdrant import EmbedRecord, Qdrant, Record
+from .qdrant import EmbedRecord, FusionMode, Qdrant, Record
 
 type _ScoredNode = tuple[BaseNode, float]
 
@@ -72,6 +72,7 @@ class QdrantVectorStore(BaseModel):
         qdrant_filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
         dense_threshold: float | None = None,
+        mode: FusionMode = 'hsf',
     ) -> list['_ScoredNode']:
         """Query index for top k most similar nodes."""
         #  NOTE: users can pass in qdrant_filters
@@ -121,7 +122,11 @@ class QdrantVectorStore(BaseModel):
                     filters=qdrant_filters,
                     with_payload=with_payload,
                 )
-            rsp = sq.lerp(dq, alpha).limit(fuse_k) if dq and sq else (dq or sq)
+            rsp = (
+                sq.hybrid(dq, alpha, fuse_k, mode=mode)
+                if dq and sq
+                else (dq or sq)
+            )
             records = (await rsp) if rsp else []
 
         return [(record_to_llama(r), r['score']) for r in records]
