@@ -32,31 +32,31 @@ def get_tokenizer(
 
     See: llama_index.core.utils.get_tokenizer
     """
-    should_revert = False
-    if 'TIKTOKEN_CACHE_DIR' not in os.environ:
-        # set tokenizer cache temporarily
-        should_revert = True
-        os.environ['TIKTOKEN_CACHE_DIR'] = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            '_static/tiktoken_cache',
-        )
-
     try:
-        enc = tiktoken.encoding_for_model(model_name)
-
-    # Model is unknown for tiktoken. Use fallback
+        ttk_name = tiktoken.encoding_name_for_model(model_name)
     except KeyError:
         tokenizer = get_tf_tokenizer(model_name, **kwargs)
         if isinstance(tokenizer, Tokenizer):
             return tokenizer.encode
         return cast('Tokenize', tokenizer)
-
     else:
+        enc = _get_tiktokenizer(ttk_name)
         return partial(enc.encode, allowed_special='all')
 
+
+def _get_tiktokenizer(name: str) -> tiktoken.Encoding:
+    if 'TIKTOKEN_CACHE_DIR' in os.environ:
+        return tiktoken.get_encoding(name)
+
+    # set tokenizer cache temporarily
+    os.environ['TIKTOKEN_CACHE_DIR'] = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        '_static/tiktoken_cache',
+    )
+    try:
+        return tiktoken.get_encoding(name)
     finally:
-        if should_revert:
-            del os.environ['TIKTOKEN_CACHE_DIR']
+        del os.environ['TIKTOKEN_CACHE_DIR']
 
 
 def get_tf_tokenizer(
