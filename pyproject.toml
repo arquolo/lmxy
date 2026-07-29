@@ -125,9 +125,6 @@ inline-quotes = "single"
 [tool.ruff.lint.mccabe]
 max-complexity = 10
 
-[tool.ruff.format]
-quote-style = "single"
-
 [tool.flake8]
 select = [
     # pyflakes,pycodestyle: n/a in ruff
@@ -180,5 +177,13 @@ exclude = ["dist"]
 
 [tool.black]
 line-length = 79
-target-version = ['py312']
+target-version = ['py313']
 skip-string-normalization = true
+
+[tool.isort]
+profile = "black"
+line_length = 79
+atomic = true
+
+[tool.ruff.format]
+quote-style = "single"
