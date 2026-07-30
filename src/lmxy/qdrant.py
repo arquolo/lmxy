@@ -182,7 +182,7 @@ class Qdrant(BaseModel):
             if 'already exists' not in str(exc):
                 raise exc  # noqa: TRY201
             _log.warning(
-                'Collection %s already exists, skipping collection creation.',
+                'Collection {} already exists, skipping collection creation.',
                 self.collection_name,
             )
             assert await self._is_initialized_unsafe()
@@ -229,14 +229,14 @@ class Qdrant(BaseModel):
         if isinstance(sparse, dict) and self.sparse_field_name in sparse:
             if not self.sparse_query_fn:
                 _log.warning(
-                    'Collection %s support '
+                    'Collection {} support '
                     'sparse search, but neither '
                     'sparse_query_fn nor sparse_model was provided',
                     self.collection_name,
                 )
             if not self.sparse_doc_fn:
                 _log.warning(
-                    'Collection %s support '
+                    'Collection {} support '
                     'sparse search, but neither '
                     'sparse_doc_fn nor sparse_model was provided',
                     self.collection_name,
