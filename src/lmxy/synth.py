@@ -125,7 +125,9 @@ async def synthesize(
             kwds = {'context_str': chunk}
         else:
             prompt = refine_q.partial_format(existing_answer=rstr)
-            chunk, *repacked = prompt_helper.repack(prompt, [chunk], llm=llm)
+            chunk, *repacked = prompt_helper.repack(
+                prompt, [chunk], padding=padding, llm=llm
+            )
             text_chunks += reversed(repacked)
             kwds = {'context_msg': chunk}
 
