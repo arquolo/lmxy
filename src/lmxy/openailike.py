@@ -3,7 +3,7 @@ __all__ = ['OpenAiLike']
 import functools
 from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from json.decoder import JSONDecodeError
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 import openai
@@ -86,12 +86,6 @@ class OpenAiLike(FunctionCallingLLM):
         description='The maximum number of tokens to generate.',
         default=None,
         gt=0,
-    )
-    reasoning_effort: Literal['low', 'medium', 'high', 'minimal'] | None = (
-        Field(
-            default=None,
-            description='The effort to use for reasoning models.',
-        )
     )
     additional_kwargs: dict[str, Any] = Field(
         default_factory=dict,

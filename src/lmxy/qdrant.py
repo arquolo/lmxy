@@ -100,11 +100,11 @@ class Qdrant(BaseModel):
     sparse_field_name: str = 'text-sparse'
 
     _update: Callable[
-        [Sequence[EmbedRecord | _Id]],
+        [Iterable[EmbedRecord | _Id]],
         Awaitable[list[_Id]],
     ] = PrivateAttr()
     _qd_query: Callable[
-        [Sequence[rest.QueryRequest]],
+        [Iterable[rest.QueryRequest]],
         Awaitable[list[Sequence[rest.ScoredPoint]]],
     ] = PrivateAttr()
 
@@ -445,7 +445,7 @@ class Qdrant(BaseModel):
         return [pts for pts in await self._qd_query(reqs) if pts]
 
     async def _ll_update(
-        self, records: Sequence[EmbedRecord | _Id], /
+        self, records: Iterable[EmbedRecord | _Id], /
     ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
         ids: list[_Id] = []
@@ -495,8 +495,9 @@ class Qdrant(BaseModel):
         return ids
 
     async def _ll_qd_query(
-        self, reqs: Sequence[rest.QueryRequest], /
+        self, reqs: Iterable[rest.QueryRequest], /
     ) -> list[Sequence[rest.ScoredPoint]]:
+        reqs = list(reqs)
         if not reqs:
             return []
         qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
