@@ -2,7 +2,6 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 from ._parsers import glue_reps, no_think, trim_repetitions_at_end, wordify
-from ._queue import MulticastQueue
 from ._types import (
     LlmFunction,
     LlmResponse,
@@ -56,7 +55,6 @@ __all__ = [
     'Embedder',
     'LlmFunction',
     'LlmResponse',
-    'MulticastQueue',
     'OpenAiLike',
     'Qdrant',
     'QdrantVectorStore',
