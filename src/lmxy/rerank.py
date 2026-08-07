@@ -18,13 +18,14 @@ from llama_index.core.schema import (
 )
 from pydantic import BaseModel, Field, PrivateAttr
 
-from .util import aclient, client, raise_for_status
+from .http import aclient, client, raise_for_status
 
 
 class Reranker:
     def __init__(
         self,
         model_name: str,
+        *,
         with_meta: bool,
         top_n: int,
         base_url: str,

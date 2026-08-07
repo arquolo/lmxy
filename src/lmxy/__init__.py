@@ -14,6 +14,7 @@ from ._types import (
 if TYPE_CHECKING:
     from ._llama import QdrantVectorStore, llama_to_record, record_to_llama
     from ._responses import tokens_from_response, unpack_response
+    from ._retry import aretry
     from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
@@ -22,16 +23,17 @@ if TYPE_CHECKING:
     from .tokenizer import get_tokenizer
 else:
     _exports = {
+        '._llama': ['QdrantVectorStore', 'llama_to_record', 'record_to_llama'],
         '._responses': [
             'get_full_response',
             'tokens_from_response',
             'unpack_response',
         ],
+        '._retry': ['aretry'],
         '.embed': ['Embedder'],
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
         '.qdrant': ['Qdrant'],
-        '._llama': ['QdrantVectorStore', 'llama_to_record', 'record_to_llama'],
         '.rerank': ['Reranker'],
         '.tokenizer': ['get_tokenizer'],
     }
@@ -62,6 +64,7 @@ __all__ = [
     'SparseEncode',
     'Tokenize',
     'Tokens',
+    'aretry',
     'get_full_response',
     'get_sparse_encoder',
     'get_tokenizer',

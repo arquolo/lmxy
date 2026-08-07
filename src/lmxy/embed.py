@@ -14,8 +14,9 @@ from llama_index.utils.huggingface import (
 )
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
+from ._retry import aretry
 from ._types import Embedding
-from .util import aclient, aretry, client, raise_for_status
+from .http import aclient, client, raise_for_status
 
 _endpoints = ['/embed', '/api/embed', '/embeddings', '/v1/embeddings']
 _text_keys = ['input', 'inputs']

@@ -17,9 +17,10 @@ from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
 from qdrant_client.http import models as rest
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+from ._retry import aretry
 from ._types import Embedding, SparseEncode
 from .fastembed import get_sparse_encoder
-from .util import aretry, min_max
+from .util import min_max
 
 _Id = int | str | UUID
 

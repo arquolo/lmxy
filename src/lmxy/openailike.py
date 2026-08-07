@@ -29,8 +29,8 @@ from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from pydantic import Field, PrivateAttr
 
 from ._async import map_ctx
+from ._retry import aretry
 from ._types import Tokenize
-from .util import aretry
 
 if TYPE_CHECKING:
     from llama_index.core.tools.types import BaseTool
