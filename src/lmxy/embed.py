@@ -172,7 +172,7 @@ class Embedder(BaseEmbedding):
         except StopIteration:
             return
 
-    def _handshake(self) -> Generator[httpx.Request, None, None]:
+    def _handshake(self) -> Generator[httpx.Request]:
         # Try to find working combo
         errors: list[Exception] = []
         try:

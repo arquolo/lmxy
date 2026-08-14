@@ -42,6 +42,7 @@ def score(
     refs_and_hyps: Sequence[tuple[str, str]],
     model_name: str,
     num_layers: int,
+    *,
     idf: bool = False,
     batch_size: int = 64,
     device: str | None = None,
@@ -105,7 +106,7 @@ def score(
         disable=not verbose,
         smoothing=0,
     ) as tq:
-        for ubatch in batched(uniq, batch_size):
+        for ubatch in batched(uniq, batch_size, strict=False):
             embs |= _embed(ubatch, model, tokenizer, device=device)
             tq.update(len(ubatch))
 
@@ -123,7 +124,7 @@ def score(
     with tqdm(
         all_iembs, 'greedy matching...', disable=not verbose, smoothing=0
     ) as tq:
-        for batch in batched(tq, batch_size):
+        for batch in batched(tq, batch_size, strict=False):
             all_ts.append(_greedy_cos_idf(batch))
             main_tq.update(len(batch))
 
