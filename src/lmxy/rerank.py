@@ -90,7 +90,7 @@ class Reranker:
 
         nodes = sorted(
             nodes,
-            key=lambda n: n.score or 1.0,
+            key=lambda n: 1.0 if n.score is None else n.score,
             reverse=True,
         )
         return nodes[: self._top_n or None]
