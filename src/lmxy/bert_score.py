@@ -62,6 +62,8 @@ def score(
 
     Returns tensors of per-sample precisions, recalls & F1 scores. Size N.
     """
+    if not refs_and_hyps:
+        return torch.empty(0), torch.empty(0), torch.empty(0)
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -125,6 +127,8 @@ def score(
             all_ts.append(_greedy_cos_idf(batch))
             main_tq.update(len(batch))
 
+    if not all_ts:
+        return torch.empty(0), torch.empty(0), torch.empty(0)
     ps, rs = torch.cat(all_ts).unbind(dim=1)
     fs = 2 * ps * rs / (ps + rs)
 
