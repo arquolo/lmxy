@@ -8,7 +8,8 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
 from glow import astreaming
-from grpc import RpcError
+from grpc import RpcError, StatusCode
+from grpc.aio import AioRpcError
 from loguru import logger
 from pydantic import BaseModel, PrivateAttr
 from qdrant_client import AsyncQdrantClient
@@ -182,10 +183,7 @@ class Qdrant(BaseModel):
         except (RpcError, ValueError, UnexpectedResponse) as exc:
             if 'already exists' not in str(exc):
                 raise exc  # noqa: TRY201
-            _log.warning(
-                'Collection {} already exists, skipping collection creation.',
-                self.collection_name,
-            )
+            _log.warning(f'Reusing existing collection {self.collection_name}')
             assert await self._is_initialized_unsafe()
 
         await self._setup_indices()
@@ -336,11 +334,19 @@ class Qdrant(BaseModel):
         ids: Sequence[_Id],
         with_payload: Sequence[str] | bool = True,
     ) -> list[rest.Record]:
-        if not await self.is_initialized():
-            return []
-        return await self.aclient.retrieve(
-            self.collection_name, ids, with_payload=with_payload
-        )
+        aw = self.aclient.retrieve(self.collection_name, ids, with_payload)
+        try:
+            return await aw
+        except AioRpcError as e:
+            if e.code() is StatusCode.NOT_FOUND:
+                _log.warning(f'Not initialized: {self.collection_name}')
+                return []
+            raise
+        except UnexpectedResponse as e:
+            if e.status_code == 404:
+                _log.warning(f'Not initialized: {self.collection_name}')
+                return []
+            raise
 
     async def qd_query(
         self,
@@ -365,9 +371,8 @@ class Qdrant(BaseModel):
         threshold: float | None = None,
         filters: rest.Filter | None = None,
     ) -> rest.Prefetch | None:
-        if not limit or not await self.is_initialized():
+        if not limit:
             return None
-
         vec: Embedding | rest.SparseVector
         if isinstance(q, str):
             if not self.sparse_query_fn:
@@ -395,12 +400,20 @@ class Qdrant(BaseModel):
 
     # CRUD: delete
     async def delete_by(self, value: str, key: str) -> None:
-        if not await self.is_initialized():
-            return
         cond = rest.FieldCondition(key=key, match=rest.MatchValue(value=value))
-        await self.aclient.delete(
-            self.collection_name, rest.Filter(must=[cond])
-        )
+        selector = rest.Filter(must=[cond])
+        try:
+            await self.aclient.delete(self.collection_name, selector)
+        except AioRpcError as e:
+            if e.code() is StatusCode.NOT_FOUND:
+                _log.warning(f'Not initialized: {self.collection_name}')
+                return
+            raise
+        except UnexpectedResponse as e:
+            if e.status_code == 404:
+                _log.warning(f'Not initialized: {self.collection_name}')
+                return
+            raise
 
     # CRUD: delete
     async def delete(self, ids: Sequence[str], /) -> None:
@@ -450,50 +463,56 @@ class Qdrant(BaseModel):
     ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
         ids: list[_Id] = []
-        add_recs: list[EmbedRecord] = []
-        rm_ids: list[_Id] = []
-        for r in records:
+        actions: dict[_Id, EmbedRecord | None] = {}
+        for r in records:  # For same ID of add/rm last takes precedence
             if isinstance(r, _Id):
                 ids.append(r)
-                rm_ids.append(r)
+                actions[r] = None
             else:
                 ids.append(r['id_'])
-                add_recs.append(r)
-        add_recs = list({d['id_']: d for d in add_recs}.values())
+                actions[r['id_']] = r
 
-        aws: list[Awaitable] = []
+        try:
+            async with asyncio.TaskGroup() as tg:
+                if recs := [a for a in actions.values() if a]:
+                    vecs = (v for r in recs for v in r.get('embeddings', []))
+                    vec = next(vecs, None)
+                    if vec is None:
+                        raise ValueError('No dense vectors to store')
+                    await self.initialize(len(vec))
+                    tg.create_task(self._ll_upsert(recs))
 
-        if add_recs:
-            rec0 = add_recs[0]
-            if not (vecs := rec0.get('embeddings')):
-                raise ValueError('No dense vectors to store')
-            vec_size = len(vecs[0])
-            await self.initialize(vec_size)
-
-            svs = await _aembed_sparse_records(self.sparse_doc_fn, add_recs)
-            points = [
-                _record_to_qd(
-                    r,
-                    dense_field=self.dense_field_name,
-                    sparse_field=self.sparse_field_name,
-                    sparse_vec=sv,
-                )
-                for r, sv in zip(add_recs, svs, strict=True)
-            ]
-            aws.append(self.aclient.upsert(self.collection_name, points))
-
-        if rm_ids and await self.is_initialized():
-            cond = rest.HasIdCondition(has_id=rm_ids)
-            aws.append(
-                self.aclient.delete(
-                    self.collection_name, rest.Filter(must=[cond])
-                )
-            )
-
-        if aws:
-            await asyncio.gather(*aws)
+                if rm_ids := [i for i, a in actions.items() if not a]:
+                    tg.create_task(
+                        self.aclient.delete(self.collection_name, list(rm_ids))
+                    )
+        except* AioRpcError as eg:
+            errors = cast('list[AioRpcError]', eg.exceptions)
+            if any(e.code() == StatusCode.NOT_FOUND for e in errors):
+                _log.warning(f'Not initialized: {self.collection_name}')
+            if rest := [e for e in errors if e.code() != StatusCode.NOT_FOUND]:
+                raise eg.derive(rest) from eg
+        except* UnexpectedResponse as eg:
+            errors = cast('list[UnexpectedResponse]', eg.exceptions)
+            if any(e.status_code == 404 for e in errors):
+                _log.warning(f'Not initialized: {self.collection_name}')
+            if rest := [e for e in errors if e.status_code != 404]:
+                raise eg.derive(rest) from eg
 
         return ids
+
+    async def _ll_upsert(self, recs: Sequence[EmbedRecord]) -> None:
+        svs = await _aembed_sparse_records(self.sparse_doc_fn, recs)
+        points = [
+            _record_to_qd(
+                r,
+                dense_field=self.dense_field_name,
+                sparse_field=self.sparse_field_name,
+                sparse_vec=sv,
+            )
+            for r, sv in zip(recs, svs, strict=True)
+        ]
+        await self.aclient.upsert(self.collection_name, points)
 
     async def _ll_qd_query(
         self, reqs: Iterable[rest.QueryRequest], /
@@ -501,7 +520,19 @@ class Qdrant(BaseModel):
         reqs = list(reqs)
         if not reqs:
             return []
-        qrs = await self.aclient.query_batch_points(self.collection_name, reqs)
+        aw = self.aclient.query_batch_points(self.collection_name, reqs)
+        try:
+            qrs = await aw
+        except AioRpcError as e:
+            if e.code() is StatusCode.NOT_FOUND:
+                _log.warning(f'Not initialized: {self.collection_name}')
+                return [[] for _ in reqs]
+            raise
+        except UnexpectedResponse as e:
+            if e.status_code == 404:
+                _log.warning(f'Not initialized: {self.collection_name}')
+                return [[] for _ in reqs]
+            raise
         return [r.points for r in qrs]
 
 
