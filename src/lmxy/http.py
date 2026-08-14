@@ -134,6 +134,7 @@ class _RetryMiddleware:
             rsp = await handler(req)
             if rsp.status not in _HTTP_RETRY_CODES:
                 return rsp
+            rsp.release()
         return await handler(req)  # Final unconditional attempt
 
 
