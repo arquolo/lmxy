@@ -2,7 +2,7 @@ __all__ = ['Embedder']
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Iterable
 from typing import Literal
 
 import httpx
@@ -30,8 +30,9 @@ def _too_many_requests(e: BaseException) -> bool:
 
 def _get_token_trimmer(
     max_chars: int, max_batch_size: int
-) -> Callable[[Sequence[str]], int]:
-    def usable_size(texts: Sequence[str]) -> int:
+) -> Callable[[Iterable[str]], int]:
+    def usable_size(texts: Iterable[str]) -> int:
+        texts = list(texts)
         if max_batch_size:
             texts = texts[:max_batch_size]
         if max_chars:
@@ -98,8 +99,8 @@ class Embedder(BaseEmbedding):
     _text_key: str = PrivateAttr()
     _ssemlock: threading.Semaphore = PrivateAttr()
     _asemlock: asyncio.Semaphore = PrivateAttr()
-    _embed: Callable[[Sequence[str]], list[Embedding]] = PrivateAttr()
-    _aembed: Callable[[Sequence[str]], Awaitable[list[Embedding]]] = (
+    _embed: Callable[[Iterable[str]], list[Embedding]] = PrivateAttr()
+    _aembed: Callable[[Iterable[str]], Awaitable[list[Embedding]]] = (
         PrivateAttr()
     )
 
@@ -145,34 +146,24 @@ class Embedder(BaseEmbedding):
             self._aembed = self._aembed_impl
 
     def handshake_sync(self) -> None:
-        gen = self._handshake()
-        req = next(gen)
-        try:
-            while True:
-                try:
-                    self._send(req)
-                except Exception as exc:  # noqa: BLE001
-                    req = gen.throw(exc)
-                else:
-                    req = next(gen)
-        except StopIteration:
-            return
+        for _ in self._handshake():
+            pass
 
     async def handshake(self) -> None:
-        gen = self._handshake()
-        req = next(gen)
+        gen = self._handshake(sync=False)
+        aw = next(gen)
         try:
             while True:
                 try:
-                    await self._asend(req)
+                    await aw
                 except Exception as exc:  # noqa: BLE001
-                    req = gen.throw(exc)
+                    aw = gen.throw(exc)
                 else:
-                    req = next(gen)
+                    aw = next(gen)
         except StopIteration:
             return
 
-    def _handshake(self) -> Generator[httpx.Request]:
+    def _handshake(self, sync: bool = True) -> Generator[Awaitable]:
         # Try to find working combo
         errors: list[Exception] = []
         try:
@@ -180,9 +171,13 @@ class Embedder(BaseEmbedding):
                 # Find whether `input` or `inputs` must be in scheme
                 for self._text_key in _text_keys:
                     req = self._request(['test line'])
+                    assert req
                     try:
                         # Raw call, to not retry
-                        yield req
+                        if sync:
+                            self._send(req)
+                        else:
+                            yield self._asend(req)
                     except httpx.HTTPStatusError as exc:
                         if exc.response.status_code == 404:  # Missing url
                             break  # Next `_text_key` will fail too, skip it.
@@ -212,7 +207,7 @@ class Embedder(BaseEmbedding):
         texts = self._with_inst([text], mode='text')
         return self._embed(texts)[0]
 
-    def _get_text_embeddings(self, texts: Sequence[str]) -> list[Embedding]:
+    def _get_text_embeddings(self, texts: Iterable[str]) -> list[Embedding]:
         """Get text embeddings."""
         texts = self._with_inst(texts, mode='text')
         return self._embed(texts)
@@ -228,23 +223,21 @@ class Embedder(BaseEmbedding):
         return (await self._aembed(texts))[0]
 
     async def _aget_text_embeddings(
-        self, texts: Sequence[str]
+        self, texts: Iterable[str]
     ) -> list[Embedding]:
         """Get text embeddings async."""
         texts = self._with_inst(texts, mode='text')
         return await self._aembed(texts)
 
-    def _embed_impl(self, texts: Sequence[str]) -> list[Embedding]:
-        if not texts:
-            return []
-        req = self._request(texts)
-        return self._retry(self._send, req)
+    def _embed_impl(self, texts: Iterable[str]) -> list[Embedding]:
+        if req := self._request(texts):
+            return self._retry(self._send, req)
+        return []
 
-    async def _aembed_impl(self, texts: Sequence[str]) -> list[Embedding]:
-        if not texts:
-            return []
-        req = self._request(texts)
-        return await self._retry(self._asend, req)
+    async def _aembed_impl(self, texts: Iterable[str]) -> list[Embedding]:
+        if req := self._request(texts):
+            return await self._retry(self._asend, req)
+        return []
 
     def _send(self, req: httpx.Request) -> list[Embedding]:
         with self._ssemlock:
@@ -267,12 +260,15 @@ class Embedder(BaseEmbedding):
         return fn(*args, **kwargs)
 
     def _with_inst(
-        self, texts: Sequence[str], mode: Literal['query', 'text']
+        self, texts: Iterable[str], mode: Literal['query', 'text']
     ) -> list[str]:
         inst = self._instructions.get(mode, '')
         return [f'{inst} {t}'.strip() for t in texts]
 
-    def _request(self, texts: Sequence[str]) -> httpx.Request:
+    def _request(self, texts: Iterable[str]) -> httpx.Request | None:
+        texts = list(texts)
+        if not texts:
+            return None
         if not self._endpoint or not self._text_key:
             raise RuntimeError(
                 'Embedder is not initialized. `handshake` was never called'
