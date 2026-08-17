@@ -6,7 +6,7 @@ from typing import Protocol, TypedDict, Unpack, cast, runtime_checkable
 
 import tiktoken
 from glow import memoize
-from transformers import AutoTokenizer, PreTrainedTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from ._types import Tokenize
 
@@ -62,5 +62,5 @@ def _get_tiktokenizer(name: str) -> tiktoken.Encoding:
 def get_tf_tokenizer(
     name: str,
     **kwargs: Unpack[_TokenizerKwds],
-) -> PreTrainedTokenizer:
+) -> PreTrainedTokenizerBase:
     return AutoTokenizer.from_pretrained(name, **kwargs)
