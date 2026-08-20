@@ -30,9 +30,7 @@ async def unpack_response[**P](
         return ret
     if isinstance(ret, Tokens):
         return ret, []
-    if isinstance(ret, AsyncIterable):
-        return Tokens(ret), []
-    if isinstance(ret, str):
+    if isinstance(ret, AsyncIterable | str):
         return Tokens(ret), []
     return tokens_from_response(ret), ret.source_nodes
 

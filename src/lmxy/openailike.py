@@ -282,17 +282,19 @@ class OpenAiLike(FunctionCallingLLM):
 
         return all_kwargs | kwargs
 
-    def _prepare_chat_with_tools(
+    def _prepare_chat_with_tools(  # type: ignore[override]
         self,
         tools: Sequence['BaseTool'],
+        *,
         user_msg: str | ChatMessage | None = None,
         chat_history: list[ChatMessage] | None = None,
-        verbose: bool = False,
-        allow_parallel_tool_calls: bool = False,
         tool_required: bool = False,
         **kwargs,
     ) -> dict[str, Any]:
         """Predict and call the tool."""
+        kwargs.pop('verbose', None)
+        kwargs.pop('allow_parallel_tool_calls', None)
+
         messages = chat_history or []
         if user_msg is not None:
             if isinstance(user_msg, str):
@@ -379,15 +381,9 @@ def _to_openai_message_dict(m: ChatMessage) -> 'ChatCompletionMessageParam':
         match block:
             case TextBlock(text=text):
                 blocks.append({'type': 'text', 'text': text})
-            case ImageBlock(image=bytes(b64)):
-                blocks.append(
-                    {
-                        'type': 'image_url',
-                        'image_url': {
-                            'url': f'data:image/png;base64,{b64.decode()}'
-                        },
-                    }
-                )
+            case ImageBlock():
+                url = {'url': block.inline_url()}
+                blocks.append({'type': 'image_url', 'image_url': url})
             case _:
                 msg = f'Unsupported content block type: {type(block).__name__}'
                 raise TypeError(msg)
@@ -419,7 +415,7 @@ def _to_openai_message_dict(m: ChatMessage) -> 'ChatCompletionMessageParam':
         ):
             content = content or None
 
-    ret = {'role': role, 'content': content}
+    ret = {'role': role, 'content': content} | m.additional_kwargs
 
     # NOTE: openai messages have additional arguments:
     # - function messages have `name`
