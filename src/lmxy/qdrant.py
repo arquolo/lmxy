@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
 from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
-from glow import astreaming
+from glow import streaming
 from grpc import RpcError, StatusCode
 from grpc.aio import AioRpcError
 from loguru import logger
@@ -122,7 +122,7 @@ class Qdrant(BaseModel):
         )
         update = self._ll_update
         if self.upsert_timeout is not None:
-            update = astreaming(
+            update = streaming(
                 update,
                 batch_size=self.upsert_batch_size,
                 timeout=self.upsert_timeout,
@@ -131,7 +131,7 @@ class Qdrant(BaseModel):
 
         qd_query = self._ll_qd_query
         if self.query_timeout is not None:
-            qd_query = astreaming(
+            qd_query = streaming(
                 qd_query,
                 batch_size=self.query_batch_size,
                 timeout=self.query_timeout,

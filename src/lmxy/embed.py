@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Generator, Iterable
 from typing import Literal
 
 import httpx
-from glow import astreaming, streaming
+from glow import streaming
 from llama_index.core.base.embeddings.base import BaseEmbedding
 from llama_index.utils.huggingface import (
     get_query_instruct_for_model_name,
@@ -136,7 +136,7 @@ class Embedder(BaseEmbedding):
                 pool_timeout=self.timeout or 360,
                 workers=self.concurrency,
             )
-            self._aembed = astreaming(
+            self._aembed = streaming(
                 self._aembed_impl,
                 batch_size=usable_size,
                 timeout=self.latency,
