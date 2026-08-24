@@ -149,10 +149,8 @@ async def trim_repetitions_at_end[T](
     min_window: int = 10,
     max_window: int = 40,
 ) -> AsyncGenerator[T]:
-    """Finds repetitions of token sequence and cuts on it.
-
-    TODO: optimize for large window sizes. Now it's big O(n w^2).
-    """
+    """Finds repetitions of token sequence and cuts on it."""
+    # TODO: optimize for large window sizes. Now it's big O(n w^2).
     assert 0 < min_window <= max_window
     buf: list[T] = []
 
