@@ -2,6 +2,7 @@ __all__ = ['glue_reps', 'no_think', 'trim_repetitions_at_end', 'wordify']
 
 import re
 import string
+from collections import deque
 from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 
 _THINK_START = '<think>'
@@ -150,28 +151,31 @@ async def trim_repetitions_at_end[T](
     max_window: int = 40,
 ) -> AsyncGenerator[T]:
     """Finds repetitions of token sequence and cuts on it."""
-    # TODO: optimize for large window sizes. Now it's big O(n w^2).
     assert 0 < min_window <= max_window
-    buf: list[T] = []
+    buf = deque[T]()
+    mask = [0] * max_window
+    max_cut = 0
 
-    async for tok in tokens:  # O(n w^2)
+    async for tok in tokens:
+        half = (len(buf) + 1) // 2
+        for w, w_tok in zip(range(max_window), reversed(buf)):
+            if tok == w_tok:
+                mask[w] += 1
+                if min_window <= w + 1 <= min(half, mask[w]):
+                    max_cut = w + 1
+            else:
+                mask[w] = 0
         buf.append(tok)
 
-        while len(buf) >= 2 * max_window:
-            yield buf.pop(0)
-
-        cuts = (  # O(w^2), maybe we could optimize it to O(w) via DP?
-            n
-            for n in range(len(buf) // 2, min_window - 1, -1)
-            if buf[-n * 2 : -n] == buf[-n:]
-        )
-        max_cut = next(cuts, -1)
         if max_cut > 0:  # Found duplicate, stop consumption of iterator
-            buf = buf[:-max_cut]
             break
 
-    for tok in buf:  # Finalize
-        yield tok
+        if len(buf) >= 2 * max_window:
+            yield buf.popleft()
+
+    # Finalize
+    while len(buf) > max_cut:  # Ignore `max_cut` last items
+        yield buf.popleft()
 
 
 def trim_repetitions_at_end_[T](
