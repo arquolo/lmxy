@@ -151,6 +151,7 @@ class Qdrant(BaseModel):
         if self._is_initialized:
             return
         async with _LOCK:
+            await self._load_models_unsafe()
             await self._initialize_unsafe(vector_size)
 
     async def is_initialized(self) -> bool:
@@ -160,8 +161,6 @@ class Qdrant(BaseModel):
             return await self._is_initialized_unsafe()
 
     async def _initialize_unsafe(self, vector_size: int) -> None:
-        await self._load_models()
-
         self.dense_config.size = self.dense_config.size or vector_size
         if vector_size != self.dense_config.size:
             raise ValueError(
@@ -217,7 +216,6 @@ class Qdrant(BaseModel):
             return True
         if not await self.aclient.collection_exists(self.collection_name):
             return False
-        await self._load_models()
         info = await self.aclient.get_collection(self.collection_name)
 
         dense = info.config.params.vectors
@@ -246,6 +244,7 @@ class Qdrant(BaseModel):
                     self.collection_name,
                 )
         else:
+            self.sparse_model = None
             self.sparse_query_fn = self.sparse_doc_fn = None
 
         self._is_initialized = True
@@ -256,9 +255,18 @@ class Qdrant(BaseModel):
             self.sparse_doc_fn is not None and self.sparse_query_fn is not None
         ):
             return
+        async with _LOCK:
+            await self._load_models_unsafe()
 
+    async def _load_models_unsafe(self) -> None:
+        if self.sparse_model is None or (
+            self.sparse_doc_fn is not None and self.sparse_query_fn is not None
+        ):
+            return
         encoder = await asyncio.to_thread(
-            get_sparse_encoder, self.sparse_model, **self.sparse_model_kwargs
+            get_sparse_encoder,
+            self.sparse_model,
+            **self.sparse_model_kwargs,
         )
         self.sparse_doc_fn = self.sparse_doc_fn or encoder
         self.sparse_query_fn = self.sparse_query_fn or encoder
@@ -378,6 +386,7 @@ class Qdrant(BaseModel):
     ) -> rest.Prefetch | None:
         if not limit:
             return None
+        await self._load_models()
         vec: Embedding | rest.SparseVector
         if isinstance(q, str):
             if not self.sparse_query_fn:
@@ -507,6 +516,7 @@ class Qdrant(BaseModel):
         return ids
 
     async def _ll_upsert(self, recs: Sequence[EmbedRecord]) -> None:
+        await self._load_models()
         svs = await _aembed_sparse_records(self.sparse_doc_fn, recs)
         points = [
             _record_to_qd(
