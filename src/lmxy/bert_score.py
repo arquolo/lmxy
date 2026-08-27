@@ -209,7 +209,7 @@ def get_model(
 def _embed(
     sentences: Sequence[str],
     model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: PreTrainedTokenizerBase,
     device: str,
 ) -> dict[str, _Embedding]:
     # Tokenize
@@ -257,7 +257,7 @@ class Idf:
     idf: Mapping[int, float]
 
     @classmethod
-    def default(cls, tokenizer: PreTrainedTokenizer) -> 'Idf':
+    def default(cls, tokenizer: PreTrainedTokenizerBase) -> 'Idf':
         idf = defaultdict[int, float](lambda: 1.0)
         idf[tokenizer.sep_token_id] = 0
         idf[tokenizer.cls_token_id] = 0

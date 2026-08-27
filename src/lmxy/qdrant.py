@@ -11,12 +11,17 @@ from glow import streaming
 from grpc import RpcError, StatusCode
 from grpc.aio import AioRpcError
 from loguru import logger
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel, PrivateAttr, ValidationError
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.conversions.common_types import QuantizationConfig
 from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
 from qdrant_client.http import models as rest
 from qdrant_client.http.exceptions import UnexpectedResponse
+
+try:  # Qdrant 1.16+
+    from qdrant_client.http.models import Rrf, RrfQuery  # type: ignore
+except ImportError:
+    Rrf = RrfQuery = None  # type: ignore
 
 from ._retry import aretry
 from ._types import Embedding, SparseEncode
@@ -430,7 +435,7 @@ class Qdrant(BaseModel):
         self,
         *subqueries: Callable[[], Awaitable[rest.Prefetch | None]],
         with_payload: list[str] | bool = True,
-        query: rest.FusionQuery | rest.RrfQuery | None = None,
+        query: rest.QueryInterface | None = None,
         limit: int = 1,
     ) -> list[Sequence[rest.ScoredPoint]]:
         prefetches = [
@@ -458,7 +463,7 @@ class Qdrant(BaseModel):
             ]
         return [pts for pts in await self._qd_query(reqs) if pts]
 
-    async def _ll_update(
+    async def _ll_update(  # noqa: C901
         self, records: Iterable[EmbedRecord | _Id], /
     ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
@@ -576,9 +581,14 @@ def _record_to_qd(
     if not vector:
         raise ValueError(f'Embedding is not set: keys={record.keys()}')
 
-    return rest.PointStruct(
-        id=record['id_'], vector=vector, payload=record['data']
-    )
+    try:
+        return rest.PointStruct(
+            id=record['id_'], vector=vector, payload=record['data']
+        )
+    except ValidationError:
+        return rest.PointStruct(
+            id=str(record['id_']), vector=vector, payload=record['data']
+        )
 
 
 def _qd_to_record(
@@ -635,11 +645,19 @@ class _Request:
             case 'hsf':
                 return await self.hsf(other, t, limit)
             case 'rrf':
-                return await self._fuse(
-                    other,
-                    rest.RrfQuery(rrf=rest.Rrf(k=rrf_k, weights=[1 - t, t])),
-                    limit=limit,
-                )
+                if RrfQuery and Rrf:  # type: ignore  # Qdrant 1.16+
+                    if hasattr(Rrf, 'weights'):  # Qdrant 1.17+
+                        rrf = Rrf(k=rrf_k, weights=[1 - t, t])  # type: ignore
+                    elif t != 0.5:
+                        raise ValueError('Qdrant<1.17 has no RRF `weights`')
+                    else:
+                        rrf = Rrf(k=rrf_k)
+                    q = RrfQuery(rrf=rrf)
+                elif rrf_k is not None:
+                    raise ValueError('Qdrant<1.16 has no RRF `k`')
+                else:
+                    q = rest.FusionQuery(fusion=rest.Fusion.RRF)
+                return await self._fuse(other, q, limit=limit)
             case 'dbsf':
                 return await self._fuse(
                     other,
@@ -649,10 +667,7 @@ class _Request:
         raise NotImplementedError
 
     async def _fuse(
-        self,
-        other: '_Request',
-        query: rest.FusionQuery | rest.RrfQuery,
-        limit: int = 1,
+        self, other: '_Request', query: rest.QueryInterface, limit: int = 1
     ) -> list[ScoredRecord]:
         if limit <= 0:
             return []
