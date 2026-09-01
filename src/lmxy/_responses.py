@@ -15,9 +15,7 @@ from ._types import (
 )
 
 
-async def unpack_response(
-    ret: LlmResponse,
-) -> tuple[Tokens, list[NodeWithScore]]:
+def unpack_response(ret: LlmResponse) -> tuple[Tokens, list[NodeWithScore]]:
     if isinstance(ret, tuple):
         return ret
     if isinstance(ret, Tokens):
