@@ -21,7 +21,7 @@ from transformers import (
     AutoModel,
     GPT2Tokenizer,
     PreTrainedModel,
-    PreTrainedTokenizer,
+    PreTrainedTokenizerBase,
     RobertaTokenizer,
 )
 
