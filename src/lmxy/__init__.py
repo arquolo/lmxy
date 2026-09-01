@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING
 from ._parsers import glue_reps, no_think, trim_repetitions_at_end, wordify
 from ._types import (
     LlmFunction,
-    LlmResponse,
     SparseEncode,
     Tokenize,
     Tokens,
@@ -56,7 +55,6 @@ else:
 __all__ = [
     'Embedder',
     'LlmFunction',
-    'LlmResponse',
     'OpenAiLike',
     'Qdrant',
     'QdrantVectorStore',

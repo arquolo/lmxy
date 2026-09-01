@@ -1,31 +1,23 @@
 __all__ = ['tokens_from_response', 'unpack_response']
 
-from collections.abc import AsyncIterable, Awaitable
+from collections.abc import AsyncIterable, Iterable
 
-from llama_index.core.base.response.schema import (
-    AsyncStreamingResponse,
-    PydanticResponse,
-    Response,
-)
-from llama_index.core.chat_engine.types import (
-    AgentChatResponse,
-    StreamingAgentChatResponse,
-)
 from llama_index.core.schema import NodeWithScore
 from pydantic import BaseModel
 
-from ._types import LlmFunction, LlmResponse, Tokens
+from ._async import gen_to_agen
+from ._types import (
+    HasAsyncResponseGen,
+    HasResponse,
+    HasResponseGen,
+    LlmResponse,
+    Tokens,
+)
 
 
-async def unpack_response[**P](
-    f: LlmFunction[P], *args: P.args, **kwargs: P.kwargs
+async def unpack_response(
+    ret: LlmResponse,
 ) -> tuple[Tokens, list[NodeWithScore]]:
-    aw_agen = f(*args, **kwargs)
-    ret = (
-        await aw_agen
-        if isinstance(aw_agen, Awaitable) and not isinstance(aw_agen, Tokens)
-        else aw_agen
-    )
     if isinstance(ret, tuple):
         return ret
     if isinstance(ret, Tokens):
@@ -35,29 +27,42 @@ async def unpack_response[**P](
     return tokens_from_response(ret), ret.source_nodes
 
 
-def tokens_from_response(lrsp: LlmResponse) -> Tokens:
+def tokens_from_response(
+    lrsp: 'HasResponse | HasResponseGen | HasAsyncResponseGen',
+) -> Tokens:
     match lrsp:
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
         # Synthesizer.(a)synthesize if output_cls is set
-        case Response(response=None) | PydanticResponse(response=None):
+        # -> llama_index.core.base.response.schema.{Response,PydanticResponse}
+        case HasResponse(response=None):
             return Tokens()
 
         # Chat.(a)chat
         # Synthesizer.(a)synthesize
-        case AgentChatResponse(response=obj) | Response(response=str(obj)):
+        # -> llama_index.core.base.response.schema.Response
+        # -> llama_index.core.chat_engine.types.AgentChatResponse
+        case HasResponse(response=str(obj)):
             return Tokens(obj)
 
         # Synthesizer.(a)synthesize if output_cls is set
-        case PydanticResponse(response=BaseModel() as rsp):
+        # -> llama_index.core.base.response.schema.PydanticResponse
+        case HasResponse(response=BaseModel() as rsp):
             return Tokens(rsp.model_dump_json())
 
         # Synthesizer(stream=True).asynthesize
-        case AsyncStreamingResponse():
-            return Tokens(lrsp.response_gen)
+        # -> llama_index.core.base.response.schema.AsyncStreamingResponse
+        case HasResponseGen(response_gen=AsyncIterable() as agen):
+            return Tokens(agen)
+
+        # Synthesizer(stream=True).asynthesize
+        # -> llama_index.core.base.response.schema.StreamingResponse
+        case HasResponseGen(response_gen=Iterable() as gen):
+            return Tokens(gen_to_agen(gen))
 
         # Chat.(a)astream_chat
-        case StreamingAgentChatResponse():
+        # -> llama_index.core.chat_engine.types.StreamingAgentChatResponse
+        case HasAsyncResponseGen():
             return Tokens(lrsp.async_response_gen())
 
         case _:

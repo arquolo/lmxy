@@ -1,7 +1,6 @@
 __all__ = [
     'Embedding',
     'LlmFunction',
-    'LlmResponse',
     'SparseEncode',
     'Tokenize',
     'Tokens',
@@ -18,20 +17,11 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from llama_index.core.base.response.schema import (
-        AsyncStreamingResponse,
-        PydanticResponse,
-        Response,
-        StreamingResponse,
-    )
-    from llama_index.core.chat_engine.types import (
-        AgentChatResponse,
-        StreamingAgentChatResponse,
-    )
     from llama_index.core.schema import NodeWithScore
+    from pydantic import BaseModel
 
 from ._async import ayield, ayield_never, genreturn
 
@@ -39,27 +29,6 @@ type Embedding = list[float]
 type SparseEncoding = tuple[list[int], Embedding]
 type BatchSparseEmbedding = list[SparseEncoding]
 type SparseEncode = Callable[[Iterable[str]], list[SparseEncoding]]
-
-type LlmResponse = Union[  # noqa: UP007
-    'Response',
-    'PydanticResponse',
-    'StreamingResponse',
-    'AsyncStreamingResponse',
-    'AgentChatResponse',
-    'StreamingAgentChatResponse',
-    str,
-]
-type NativeResponse = Union[  # noqa: UP007
-    tuple['Tokens', list['NodeWithScore']],
-    'Tokens',
-]
-type LlmFunction[**P] = Callable[
-    P,
-    Awaitable[LlmResponse | NativeResponse | AsyncIterable[str]]
-    | NativeResponse
-    | AsyncIterable[str],
-]
-type Tokenize = Callable[[str], list[Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,3 +53,39 @@ async def get_full_response(tokens: AsyncIterable[str]) -> str:
     async for tk in tokens:
         buf.write(tk)
     return buf.getvalue()
+
+
+@runtime_checkable
+class HasResponse(Protocol):
+    @property
+    def response(self) -> 'BaseModel | str | None': ...
+    @property
+    def source_nodes(self) -> list['NodeWithScore']: ...
+
+
+@runtime_checkable
+class HasResponseGen(Protocol):
+    @property
+    def response_gen(self) -> Iterable[str] | AsyncIterable[str]: ...
+    @property
+    def source_nodes(self) -> list['NodeWithScore']: ...
+
+
+@runtime_checkable
+class HasAsyncResponseGen(Protocol):
+    def async_response_gen(self) -> AsyncIterable[str]: ...
+    @property
+    def source_nodes(self) -> list['NodeWithScore']: ...
+
+
+type LlmResponse = (
+    HasResponse
+    | HasResponseGen
+    | HasAsyncResponseGen
+    | tuple[Tokens, list['NodeWithScore']]
+    | Tokens
+    | AsyncIterable[str]
+    | str
+)
+type LlmFunction[**P] = Callable[P, LlmResponse | Awaitable[LlmResponse]]
+type Tokenize = Callable[[str], list[Any]]

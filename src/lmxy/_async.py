@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import (
     AsyncGenerator,
     AsyncIterable,
@@ -35,6 +36,16 @@ async def ayield_never() -> AsyncGenerator[Never]:
     for never in ():
         assert_never(never)
         yield
+
+
+async def gen_to_agen[T](gen: Iterable[T]) -> AsyncGenerator[T]:
+    it = iter(gen)
+    while True:
+        try:
+            x = await asyncio.to_thread(next, it)
+        except StopIteration:
+            return
+        yield x
 
 
 @overload
