@@ -1,9 +1,12 @@
 __all__ = ['tokens_from_response', 'unpack_response']
 
 from collections.abc import AsyncIterable, Iterable
+from typing import TYPE_CHECKING
 
-from llama_index.core.schema import NodeWithScore
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from llama_index.core.schema import NodeWithScore
 
 from ._async import gen_to_agen
 from ._types import (
@@ -15,7 +18,7 @@ from ._types import (
 )
 
 
-def unpack_response(ret: LlmResponse) -> tuple[Tokens, list[NodeWithScore]]:
+def unpack_response(ret: LlmResponse) -> tuple[Tokens, list['NodeWithScore']]:
     if isinstance(ret, tuple):
         return ret
     if isinstance(ret, Tokens):
