@@ -387,26 +387,30 @@ class Qdrant(BaseModel):
         if not limit:
             return None
         await self._load_models()
-        vec: Embedding | rest.SparseVector
-        if isinstance(q, str):
-            if not self.sparse_query_fn:
-                msg = (
-                    f'Collection {self.collection_name} does not '
-                    'have sparse vectors to do sparse search. '
-                    'Please reinitialize it with sparse model '
-                    'to allow sparse/hybrid search'
-                )
-                raise ValueError(msg)
-            [(ids, vals)] = await asyncio.to_thread(self.sparse_query_fn, [q])
-            vec = rest.SparseVector(indices=ids, values=vals)
-            using = self.sparse_field_name
-        else:
-            vec = q
-            using = self.dense_field_name
 
+        if not isinstance(q, str):  # Dense embedding
+            return rest.Prefetch(
+                query=q,
+                using=self.dense_field_name,
+                filter=filters,
+                score_threshold=threshold,
+                limit=limit,
+            )
+
+        # Raw string for sparse embedding
+        if not self.sparse_query_fn:
+            msg = (
+                f'Collection {self.collection_name} does not '
+                'have sparse vectors to do sparse search. '
+                'Please reinitialize it with sparse model '
+                'to allow sparse/hybrid search'
+            )
+            raise ValueError(msg)
+
+        [(ids, vals)] = await asyncio.to_thread(self.sparse_query_fn, [q])
         return rest.Prefetch(
-            query=vec,
-            using=using,
+            query=rest.SparseVector(indices=ids, values=vals),
+            using=self.sparse_field_name,
             filter=filters,
             score_threshold=threshold,
             limit=limit,
@@ -447,9 +451,8 @@ class Qdrant(BaseModel):
         query: rest.QueryInterface | None = None,
         limit: int = 1,
     ) -> list[Sequence[rest.ScoredPoint]]:
-        prefetches = [
-            p for p in await asyncio.gather(*(cr() for cr in subqueries)) if p
-        ]
+        pfs = await asyncio.gather(*(cr() for cr in subqueries))
+        prefetches = [p for p in pfs if p]
         if query is not None and len(prefetches) > 1:
             req = rest.QueryRequest(
                 prefetch=list(prefetches),
@@ -457,19 +460,20 @@ class Qdrant(BaseModel):
                 limit=limit,
                 with_payload=with_payload,
             )
-            reqs = [req]
-        else:
-            reqs = [
-                rest.QueryRequest(
-                    query=p.query,
-                    using=p.using,
-                    filter=p.filter,
-                    score_threshold=p.score_threshold,
-                    limit=p.limit,
-                    with_payload=with_payload,
-                )
-                for p in prefetches
-            ]
+            [pts] = await self._qd_query([req])
+            return [pts] if pts else []
+
+        reqs = [
+            rest.QueryRequest(
+                query=p.query,
+                using=p.using,
+                filter=p.filter,
+                score_threshold=p.score_threshold,
+                limit=p.limit,
+                with_payload=with_payload,
+            )
+            for p in prefetches
+        ]
         return [pts for pts in await self._qd_query(reqs) if pts]
 
     async def _ll_update(  # noqa: C901
