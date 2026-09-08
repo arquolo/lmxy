@@ -290,13 +290,12 @@ class Qdrant(BaseModel):
         dense: DenseQuery | None = None,
         sparse: SparseQuery | None = None,
         *,
-        fuse: tuple[int, float] = (1, 0.5),
+        fuse: tuple[int, float, FusionMode] = (1, 0.5, 'hsf'),
         filters: rest.Filter | None = None,
         with_payload: Sequence[str] | bool = True,
-        mode: FusionMode = 'hsf',
     ) -> list[ScoredRecord]:
         dq = sq = None
-        k, alpha = fuse
+        k, alpha, mode = fuse
         assert 0 <= alpha <= 1
 
         k_max = 0
