@@ -11,7 +11,11 @@ from ._types import (
 )
 
 if TYPE_CHECKING:
-    from ._llama import QdrantVectorStore, llama_to_record, record_to_llama
+    from ._llama_qdrant import (
+        QdrantVectorStore,
+        llama_to_record,
+        record_to_llama,
+    )
     from ._responses import tokens_from_response, unpack_response
     from ._retry import aretry
     from .embed import Embedder
@@ -22,7 +26,11 @@ if TYPE_CHECKING:
     from .tokenizer import get_tokenizer
 else:
     _exports = {
-        '._llama': ['QdrantVectorStore', 'llama_to_record', 'record_to_llama'],
+        '._llama_qdrant': [
+            'QdrantVectorStore',
+            'llama_to_record',
+            'record_to_llama',
+        ],
         '._responses': [
             'get_full_response',
             'tokens_from_response',
