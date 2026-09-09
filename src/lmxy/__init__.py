@@ -16,13 +16,14 @@ if TYPE_CHECKING:
         llama_to_record,
         record_to_llama,
     )
+    from ._llama_rerank import LlamaReranker
     from ._responses import tokens_from_response, unpack_response
     from ._retry import aretry
     from .embed import Embedder
     from .fastembed import get_sparse_encoder
     from .openailike import OpenAiLike
     from .qdrant import Qdrant
-    from .rerank import Reranker
+    from .rerank import CrossEvaluator, Reranker
     from .tokenizer import get_tokenizer
 else:
     _exports = {
@@ -31,6 +32,7 @@ else:
             'llama_to_record',
             'record_to_llama',
         ],
+        '._llama_rerank': ['LlamaReranker'],
         '._responses': [
             'get_full_response',
             'tokens_from_response',
@@ -41,7 +43,7 @@ else:
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
         '.qdrant': ['Qdrant'],
-        '.rerank': ['Reranker'],
+        '.rerank': ['CrossEvaluator', 'Reranker'],
         '.tokenizer': ['get_tokenizer'],
     }
     _submodule_by_name = {
@@ -61,7 +63,9 @@ else:
 
 
 __all__ = [
+    'CrossEvaluator',
     'Embedder',
+    'LlamaReranker',
     'LlmFunction',
     'OpenAiLike',
     'Qdrant',
