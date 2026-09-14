@@ -48,6 +48,7 @@ class Record(TypedDict):
 
 class EmbedRecord(Record):
     embed_text: NotRequired[str]
+    dense_texts: NotRequired[list[str]]
 
 
 class ScoredRecord(Record):

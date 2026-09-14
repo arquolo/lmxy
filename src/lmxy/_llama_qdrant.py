@@ -341,6 +341,8 @@ def llama_to_record(node: BaseNode) -> EmbedRecord:
 
     if embed_text := node.get_content(MetadataMode.EMBED).strip():
         r['embed_text'] = embed_text
+    if dense_texts := node.metadata.get('dense_texts'):
+        r['dense_texts'] = dense_texts
 
     if (vec := node.embedding) is not None:
         r['embeddings'] = [vec]
