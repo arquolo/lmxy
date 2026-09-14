@@ -42,7 +42,7 @@ _log = logger.opt(depth=1)
 
 class Record(TypedDict):
     id_: _Id
-    data: dict[str, str]
+    data: dict[str, Any]
     embeddings: NotRequired[list[Embedding]]
 
 
