@@ -267,9 +267,9 @@ def record_to_llama(record: Record) -> BaseNode:
     # )
     payload = record['data'].copy()
     node_type = payload.pop('_node_type', '')
-    node_json = payload.pop('_node_content', None)
-    if node_json is None:
-        raise ValueError(f'Node content not found in metadata dict: {record}')
+    node_json = payload.pop('_node_content', b'{}')
+    if not isinstance(node_json, str | bytes):
+        raise TypeError(f'Bad type for node content: {node_json}')
     node_dict = from_json(node_json)
 
     id_ = record['id_']
