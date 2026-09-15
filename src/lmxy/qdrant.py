@@ -417,8 +417,9 @@ class Qdrant(BaseModel):
         )
 
     # CRUD: delete
-    async def delete_by(self, value: str, key: str) -> None:
-        cond = rest.FieldCondition(key=key, match=rest.MatchValue(value=value))
+    async def delete_by(self, *values: str, key: str) -> None:
+        match = rest.MatchAny(any=list(values))
+        cond = rest.FieldCondition(key=key, match=match)
         selector = rest.Filter(must=[cond])
         try:
             await self.aclient.delete(self.collection_name, selector)
