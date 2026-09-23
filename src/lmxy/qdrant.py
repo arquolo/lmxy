@@ -420,9 +420,25 @@ class Qdrant(BaseModel):
     async def delete_by(self, *values: str, key: str) -> None:
         match = rest.MatchAny(any=list(values))
         cond = rest.FieldCondition(key=key, match=match)
-        selector = rest.Filter(must=[cond])
+        await self.delete_where(must=[cond])
+
+    # CRUD: delete
+    async def delete_where(
+        self,
+        *,
+        should: Sequence[rest.Condition] = (),
+        min_should: rest.MinShould | None = None,
+        must: Sequence[rest.Condition] = (),
+        must_not: Sequence[rest.Condition] = (),
+    ) -> None:
+        where = rest.Filter(
+            should=list(should),
+            min_should=min_should,
+            must=list(must),
+            must_not=list(must_not),
+        )
         try:
-            await self.aclient.delete(self.collection_name, selector)
+            await self.aclient.delete(self.collection_name, where)
         except AioRpcError as e:
             if e.code() is StatusCode.NOT_FOUND:
                 _log.warning(f'Not initialized: {self.collection_name}')
