@@ -345,7 +345,7 @@ class Qdrant(BaseModel):
 
     def query1(
         self,
-        q: str | Embedding,
+        q: str | Embedding | None = None,
         limit: int = 1,
         threshold: float | None = None,
         filters: rest.Filter | None = None,
@@ -378,7 +378,7 @@ class Qdrant(BaseModel):
 
     async def qd_query(
         self,
-        q: str | Embedding,
+        q: str | Embedding | None = None,
         limit: int = 1,
         threshold: float | None = None,
         filters: rest.Filter | None = None,
@@ -394,7 +394,7 @@ class Qdrant(BaseModel):
 
     async def _make_qd_query(
         self,
-        q: str | Embedding,
+        q: str | Embedding | None = None,
         limit: int = 1,
         threshold: float | None = None,
         filters: rest.Filter | None = None,
@@ -402,6 +402,11 @@ class Qdrant(BaseModel):
         if not limit:
             return None
         await self._load_models()
+
+        if q is None:  # Scroll
+            if threshold is not None:
+                raise ValueError('score_threshold requires query')
+            return rest.Prefetch(query=q, filter=filters, limit=limit)
 
         if not isinstance(q, str):  # Dense embedding
             return rest.Prefetch(
