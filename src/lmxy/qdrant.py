@@ -3,6 +3,7 @@
 __all__ = ['Qdrant']
 
 import asyncio
+from asyncio import TaskGroup
 from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
 from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
@@ -95,6 +96,9 @@ class Qdrant(BaseModel):
     hnsw_config: rest.HnswConfigDiff | None = None
     optimizers_config: rest.OptimizersConfigDiff | None = None
     quantization_config: QuantizationConfig | None = None
+    kw_fields: list[str] = []  # For search
+    int_fields: list[str] = []  # For search
+    uuid_fields: list[str] = []  # For search
     tenant_fields: list[str] = []  # For multitenancy
 
     # Sparse search parameters
@@ -197,20 +201,31 @@ class Qdrant(BaseModel):
         tenant_schema = rest.KeywordIndexParams(
             type=rest.KeywordIndexType.KEYWORD, is_tenant=True
         )
-        name_n_schema = [('doc_id', rest.PayloadSchemaType.KEYWORD)] + [
-            (field, tenant_schema) for field in self.tenant_fields
-        ]
+        name_n_schema = (
+            [
+                (field, rest.PayloadSchemaType.KEYWORD)
+                for field in {'doc_id', *self.kw_fields}
+            ]
+            + [
+                (field, rest.PayloadSchemaType.INTEGER)
+                for field in self.int_fields
+            ]
+            + [
+                (field, rest.PayloadSchemaType.UUID)
+                for field in self.uuid_fields
+            ]
+            + [(field, tenant_schema) for field in self.tenant_fields]
+        )
 
         # To improve search performance set up a payload index
         # for fields used in filters.
         # https://qdrant.tech/documentation/concepts/indexing
-        aws = (
-            self.aclient.create_payload_index(
-                self.collection_name, field_name=name, field_schema=schema
-            )
-            for name, schema in name_n_schema
-        )
-        await asyncio.gather(*aws)
+        async with TaskGroup() as tg:
+            for field_name, field_schema in name_n_schema:
+                aw = self.aclient.create_payload_index(
+                    self.collection_name, field_name, field_schema
+                )
+                tg.create_task(aw)
 
     async def _is_initialized_unsafe(self) -> bool:
         if self._is_initialized:
