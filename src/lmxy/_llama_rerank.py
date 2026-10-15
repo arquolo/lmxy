@@ -28,9 +28,11 @@ class LlamaReranker:
         client: Client = client,
         aclient: AsyncClient = aclient,
         callback_manager: CallbackManager | None = None,
+        batch_size: int = 32,
     ) -> None:
         self._evaluator = CrossEvaluator(
             extra_kwargs=dict(extra_kwargs or {}),
+            batch_size=batch_size,
             base_url=base_url,
             auth_token=auth_token,
             timeout=timeout,

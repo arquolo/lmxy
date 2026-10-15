@@ -14,6 +14,7 @@ from httpx import (
     Response,
     Timeout,
 )
+from itertools import batched
 from pydantic import BaseModel, Field
 
 from .http import aclient, client, raise_for_status
@@ -30,9 +31,11 @@ class Reranker:
         timeout: float | None = 360.0,
         client: Client = client,
         aclient: AsyncClient = aclient,
+        batch_size: int = 32,
     ) -> None:
         self._evaluator = CrossEvaluator(
             extra_kwargs=dict(extra_kwargs or {}),
+            batch_size=batch_size,
             base_url=base_url,
             auth_token=auth_token,
             timeout=timeout,
@@ -69,6 +72,7 @@ class CrossEvaluator(BaseModel):
         default_factory=dict,
         description='Extra options to append to request',
     )
+    batch_size: int = Field(default=32, ge=1)
 
     # Connection
     base_url: str = Field(
@@ -98,6 +102,12 @@ class CrossEvaluator(BaseModel):
     def run(self, query: str, *texts: str) -> list[float]:
         if not texts:
             return []
+        if len(texts) > self.batch_size:
+            return [
+                x
+                for batch in batched(texts, self.batch_size, strict=False)
+                for x in self.run(query, *batch)
+            ]
         error: BaseException | None = None
         for f in self._docs_fields():
             try:
@@ -116,6 +126,12 @@ class CrossEvaluator(BaseModel):
     async def arun(self, query: str, *texts: str) -> list[float]:
         if not texts:
             return []
+        if len(texts) > self.batch_size:
+            return [
+                x
+                for batch in batched(texts, self.batch_size, strict=False)
+                for x in await self.arun(query, *batch)
+            ]
         error: BaseException | None = None
         for f in self._docs_fields():
             try:
