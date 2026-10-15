@@ -2,7 +2,7 @@ __all__ = ['Embedder']
 
 import asyncio
 import threading
-from collections.abc import Awaitable, Callable, Generator, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from typing import Literal
 
 import httpx
@@ -145,54 +145,6 @@ class Embedder(BaseEmbedding):
             self._embed = self._embed_impl
             self._aembed = self._aembed_impl
 
-    def handshake_sync(self) -> None:
-        for _ in self._handshake():
-            pass
-
-    async def handshake(self) -> None:
-        gen = self._handshake(sync=False)
-        aw = next(gen)
-        try:
-            while True:
-                try:
-                    await aw
-                except Exception as exc:  # noqa: BLE001
-                    aw = gen.throw(exc)
-                else:
-                    aw = next(gen)
-        except StopIteration:
-            return
-
-    def _handshake(self, sync: bool = True) -> Generator[Awaitable]:
-        # Try to find working combo
-        errors: list[Exception] = []
-        try:
-            for self._endpoint in _endpoints:
-                # Find whether `input` or `inputs` must be in scheme
-                for self._text_key in _text_keys:
-                    req = self._request(['test line'])
-                    assert req
-                    try:
-                        # Raw call, to not retry
-                        if sync:
-                            self._send(req)
-                        else:
-                            yield self._asend(req)
-                    except httpx.HTTPStatusError as exc:
-                        if exc.response.status_code == 404:  # Missing url
-                            break  # Next `_text_key` will fail too, skip it.
-                    except Exception as exc:  # noqa: BLE001
-                        errors.append(exc)
-                    else:
-                        return
-
-        except httpx.ConnectError as exc:
-            raise RuntimeError(f'Cannot connect to {self.base_url!r}') from exc
-        else:
-            raise ExceptionGroup(
-                f'{self.base_url} is not embeddings API', errors
-            )
-
     @classmethod
     def class_name(cls) -> str:
         return 'RemoteEmbedding'
@@ -230,14 +182,67 @@ class Embedder(BaseEmbedding):
         return await self._aembed(texts)
 
     def _embed_impl(self, texts: Iterable[str]) -> list[Embedding]:
-        if req := self._request(texts):
-            return self._retry(self._send, req)
-        return []
+        texts = list(texts)
+        if not texts:
+            return []
+        error: httpx.HTTPStatusError | None = None
+        missing: set[str] = set()
+        initialized = bool(self._endpoint)
+        for endpoint, text_key in self._api_candidates():
+            if endpoint in missing:
+                continue
+            req = self._request(texts, endpoint, text_key)
+            try:
+                embeddings = self._retry(self._send, req)
+            except httpx.HTTPStatusError as e:
+                if initialized or e.response.status_code not in {
+                    400,
+                    404,
+                    422,
+                }:
+                    raise
+                if e.response.status_code == 404:
+                    missing.add(endpoint)
+                error = e
+            else:
+                self._endpoint, self._text_key = endpoint, text_key
+                return embeddings
+        assert error is not None
+        raise RuntimeError(f'{self.base_url} is not embeddings API') from error
 
     async def _aembed_impl(self, texts: Iterable[str]) -> list[Embedding]:
-        if req := self._request(texts):
-            return await self._retry(self._asend, req)
-        return []
+        texts = list(texts)
+        if not texts:
+            return []
+        error: httpx.HTTPStatusError | None = None
+        missing: set[str] = set()
+        initialized = bool(self._endpoint)
+        for endpoint, text_key in self._api_candidates():
+            if endpoint in missing:
+                continue
+            req = self._request(texts, endpoint, text_key)
+            try:
+                embeddings = await self._retry(self._asend, req)
+            except httpx.HTTPStatusError as e:
+                if initialized or e.response.status_code not in {
+                    400,
+                    404,
+                    422,
+                }:
+                    raise
+                if e.response.status_code == 404:
+                    missing.add(endpoint)
+                error = e
+            else:
+                self._endpoint, self._text_key = endpoint, text_key
+                return embeddings
+        assert error is not None
+        raise RuntimeError(f'{self.base_url} is not embeddings API') from error
+
+    def _api_candidates(self) -> list[tuple[str, str]]:
+        if self._endpoint and self._text_key:
+            return [(self._endpoint, self._text_key)]
+        return [(ep, key) for ep in _endpoints for key in _text_keys]
 
     def _send(self, req: httpx.Request) -> list[Embedding]:
         with self._ssemlock:
@@ -253,6 +258,7 @@ class Embedder(BaseEmbedding):
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         fn = aretry(
+            override_defaults=True,
             predicate=_too_many_requests,
             max_attempts=None if self.retries is None else 1 + self.retries,
             timeout=self.timeout,
@@ -265,14 +271,9 @@ class Embedder(BaseEmbedding):
         inst = self._instructions.get(mode, '')
         return [f'{inst} {t}'.strip() for t in texts]
 
-    def _request(self, texts: Iterable[str]) -> httpx.Request | None:
-        texts = list(texts)
-        if not texts:
-            return None
-        if not self._endpoint or not self._text_key:
-            raise RuntimeError(
-                'Embedder is not initialized. `handshake` was never called'
-            )
+    def _request(
+        self, texts: list[str], endpoint: str, text_key: str
+    ) -> httpx.Request:
         headers = {'Content-Type': 'application/json'}
         if callable(self.auth_token):
             headers['Authorization'] = self.auth_token(self.base_url)
@@ -281,9 +282,9 @@ class Embedder(BaseEmbedding):
 
         return httpx.Request(
             'POST',
-            httpx.URL(self.base_url).join(self._endpoint),
+            httpx.URL(self.base_url).join(endpoint),
             headers=headers,
-            json={'model': self.model_name, self._text_key: texts},
+            json={'model': self.model_name, text_key: texts},
             extensions={'timeout': httpx.Timeout(self.timeout).as_dict()},
         )
 

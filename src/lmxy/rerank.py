@@ -5,7 +5,15 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any
 
-from httpx import URL, AsyncClient, Client, Request, Response, Timeout
+from httpx import (
+    URL,
+    AsyncClient,
+    Client,
+    HTTPStatusError,
+    Request,
+    Response,
+    Timeout,
+)
 from pydantic import BaseModel, Field
 
 from .http import aclient, client, raise_for_status
@@ -56,6 +64,7 @@ class CrossEvaluator(BaseModel):
     model_config = {'arbitrary_types_allowed': True, 'extra': 'forbid'}
 
     # Inputs and behavior
+    docs_field: str | None = None
     extra_kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description='Extra options to append to request',
@@ -80,26 +89,56 @@ class CrossEvaluator(BaseModel):
     aclient: AsyncClient = aclient
 
     def model_post_init(self, context) -> None:
-        if keys := self.extra_kwargs.keys() & {'query', 'documents', 'top_n'}:
+        forbidden = {'query', 'texts', 'documents', 'top_n'}
+        if self.docs_field:
+            forbidden.add(self.docs_field)
+        if keys := self.extra_kwargs.keys() & forbidden:
             raise ValueError(f'`extra_kwargs` contains forbidden keys: {keys}')
 
     def run(self, query: str, *texts: str) -> list[float]:
         if not texts:
             return []
-        with self._request(query, *texts) as (req, rsp, scores):
-            rsp.set_result(self.client.send(req))
-        return scores
+        error: BaseException | None = None
+        for f in self._docs_fields():
+            try:
+                with self._request(query, f, *texts) as (req, rsp, scores):
+                    rsp.set_result(self.client.send(req))
+            except HTTPStatusError as e:
+                if self.docs_field or e.response.status_code not in {400, 422}:
+                    raise
+                error = e
+            else:
+                self.docs_field = f
+                return scores
+        assert error is not None
+        raise RuntimeError(f'{self.base_url} is not rerank API') from error
 
     async def arun(self, query: str, *texts: str) -> list[float]:
         if not texts:
             return []
-        with self._request(query, *texts) as (req, rsp, scores):
-            rsp.set_result(await self.aclient.send(req))
-        return scores
+        error: BaseException | None = None
+        for f in self._docs_fields():
+            try:
+                with self._request(query, f, *texts) as (req, rsp, scores):
+                    rsp.set_result(await self.aclient.send(req))
+            except HTTPStatusError as e:
+                if self.docs_field or e.response.status_code not in {400, 422}:
+                    raise
+                error = e
+            else:
+                self.docs_field = f
+                return scores
+        assert error is not None
+        raise RuntimeError(f'{self.base_url} is not rerank API') from error
+
+    def _docs_fields(self) -> tuple[str, ...]:
+        return (
+            (self.docs_field,) if self.docs_field else ('texts', 'documents')
+        )
 
     @contextmanager
     def _request(
-        self, query: str, *texts: str
+        self, query: str, docs_field: str, *texts: str
     ) -> Generator[tuple[Request, Future[Response], list[float]]]:
         headers = {'Content-Type': 'application/json'}
         if callable(self.auth_token):
@@ -112,7 +151,7 @@ class CrossEvaluator(BaseModel):
             URL(self.base_url).join('/rerank'),
             headers=headers,
             json=(
-                {'query': query, 'documents': texts, 'top_n': len(texts)}
+                {'query': query, docs_field: texts, 'top_n': len(texts)}
                 | self.extra_kwargs
             ),
             extensions={'timeout': Timeout(self.timeout).as_dict()},
