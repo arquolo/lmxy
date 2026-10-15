@@ -15,7 +15,7 @@ from httpx import (
     Timeout,
 )
 from itertools import batched
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
 from .http import aclient, client, raise_for_status
 
@@ -180,8 +180,8 @@ class CrossEvaluator(BaseModel):
         # Populate scores
         rsp = f.result()
         raise_for_status(rsp, eager=True)
-        for x in _RerankResponse.model_validate_json(rsp.content).results:
-            scores[x.index] = x.score
+        for idx, score in _handle_response(rsp.content):
+            scores[idx] = score
 
 
 class _RerankResult(BaseModel):
@@ -191,3 +191,17 @@ class _RerankResult(BaseModel):
 
 class _RerankResponse(BaseModel):
     results: list[_RerankResult]
+
+
+def _handle_response(data: bytes) -> list[tuple[int, float]]:
+    match _parse_scores(data):
+        case _RerankResponse(results=scores):
+            return [(x.index, x.score) for x in scores]
+        case list() as obj:
+            return [(x.index, x.score) for x in obj]
+        case _ as obj:
+            return obj
+
+
+type _AnyScores = list[_RerankResult] | _RerankResponse
+_parse_scores = TypeAdapter[_AnyScores](_AnyScores).validate_json
