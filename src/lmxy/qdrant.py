@@ -12,7 +12,8 @@ from glow import streaming
 from grpc import RpcError, StatusCode
 from grpc.aio import AioRpcError
 from loguru import logger
-from pydantic import BaseModel, PrivateAttr, ValidationError
+from pydantic import BaseModel, Field, PrivateAttr, ValidationError
+from pydantic_core import to_json
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.conversions.common_types import QuantizationConfig
 from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
@@ -78,7 +79,8 @@ class Qdrant(BaseModel):
     collection_name: str
     aclient: AsyncQdrantClient
     upsert_timeout: float | None = None  # enable to batch upserts
-    upsert_batch_size: int = 64
+    upsert_batch_size: int = Field(default=64, gt=0)
+    upsert_batch_bytes: int = Field(default=1024 * 1024, gt=0)
     query_timeout: float | None = None  # enable to batch upserts
     query_batch_size: int = 64
     retries: int | None = 3  # None = retry forever
@@ -134,7 +136,7 @@ class Qdrant(BaseModel):
         if self.upsert_timeout is not None:
             update = streaming(
                 update,
-                batch_size=self.upsert_batch_size,
+                batch_size=self._update_batch_size,
                 timeout=self.upsert_timeout,
             )
         self._update = retry_(update)
@@ -569,6 +571,16 @@ class Qdrant(BaseModel):
             for r, sv in zip(recs, svs, strict=True)
         ]
         await self.aclient.upsert(self.collection_name, points)
+
+    def _update_batch_size(self, items: list[_Id | EmbedRecord]) -> int:
+        batch_bytes = 0
+        for i, x in enumerate(items, 1):
+            batch_bytes += len(to_json(x))
+            if batch_bytes > self.upsert_batch_bytes:
+                return max(i - 1, 1)
+            if i >= self.upsert_batch_size:
+                return i
+        return 0  # Wait for more points or the streaming timeout.
 
     async def _ll_qd_query(
         self, reqs: Iterable[rest.QueryRequest], /
