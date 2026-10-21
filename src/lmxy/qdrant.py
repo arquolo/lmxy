@@ -4,7 +4,7 @@ __all__ = ['Qdrant']
 
 import asyncio
 from asyncio import TaskGroup
-from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
@@ -113,13 +113,17 @@ class Qdrant(BaseModel):
     dense_field_name: str = 'text-dense'
     sparse_field_name: str = 'text-sparse'
 
+    _qd_query: Callable[
+        [Sequence[rest.QueryRequest]],
+        Awaitable[list[Sequence[rest.ScoredPoint]]],
+    ] = PrivateAttr()
     _update: Callable[
-        [Iterable[EmbedRecord | _Id]],
+        [Sequence[EmbedRecord | _Id]],
         Awaitable[list[_Id]],
     ] = PrivateAttr()
-    _qd_query: Callable[
-        [Iterable[rest.QueryRequest]],
-        Awaitable[list[Sequence[rest.ScoredPoint]]],
+    _delete_by: Callable[
+        [Sequence[tuple[str, str]]],
+        Awaitable[list[None]],
     ] = PrivateAttr()
 
     _is_initialized: bool = PrivateAttr()
@@ -127,19 +131,12 @@ class Qdrant(BaseModel):
     def model_post_init(self, context) -> None:
         if self.retries is not None:
             self.retries = max(self.retries, 0)
+
         retry_ = aretry(
             RpcError,
             UnexpectedResponse,
             max_attempts=None if self.retries is None else 1 + self.retries,
         )
-        update = self._ll_update
-        if self.upsert_timeout is not None:
-            update = streaming(
-                update,
-                batch_size=self._update_batch_size,
-                timeout=self.upsert_timeout,
-            )
-        self._update = retry_(update)
 
         qd_query = self._ll_qd_query
         if self.query_timeout is not None:
@@ -149,6 +146,18 @@ class Qdrant(BaseModel):
                 timeout=self.query_timeout,
             )
         self._qd_query = retry_(qd_query)
+
+        update = self._ll_update
+        delete_by = self._ll_delete_by
+        if self.upsert_timeout is not None:
+            deco = streaming(
+                batch_size=self._update_batch_size,
+                timeout=self.upsert_timeout,
+            )
+            update = deco(update)
+            delete_by = deco(delete_by)
+        self._update = retry_(update)
+        self._delete_by = retry_(delete_by)
 
         modifier = _SPARSE_MODIFIERS.get(self.sparse_model or '')
         self.sparse_config.modifier = modifier
@@ -440,9 +449,20 @@ class Qdrant(BaseModel):
 
     # CRUD: delete
     async def delete_by(self, *values: str, key: str) -> None:
-        match = rest.MatchAny(any=list(values))
-        cond = rest.FieldCondition(key=key, match=match)
-        await self.delete_where(must=[cond])
+        await self._delete_by([(key, v) for v in values])
+
+    async def _ll_delete_by(
+        self, kvs: Sequence[tuple[str, str]]
+    ) -> list[None]:
+        groups: dict[str, list[str]] = {}
+        for k, v in kvs:
+            groups.setdefault(k, []).append(v)
+        if should := [
+            rest.FieldCondition(key=k, match=rest.MatchAny(any=vs))
+            for k, vs in groups.items()
+        ]:
+            await self.delete_where(should=should)
+        return [None] * sum(len(vs) for vs in groups.values())
 
     # CRUD: delete
     async def delete_where(
@@ -494,7 +514,7 @@ class Qdrant(BaseModel):
         prefetches = [p for p in pfs if p]
         if query is not None and len(prefetches) > 1:
             req = rest.QueryRequest(
-                prefetch=list(prefetches),
+                prefetch=prefetches,
                 query=query,
                 limit=limit,
                 with_payload=with_payload,
@@ -516,7 +536,7 @@ class Qdrant(BaseModel):
         return [pts for pts in await self._qd_query(reqs) if pts]
 
     async def _ll_update(  # noqa: C901
-        self, records: Iterable[EmbedRecord | _Id], /
+        self, records: Sequence[EmbedRecord | _Id], /
     ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
         ids: list[_Id] = []
@@ -583,9 +603,8 @@ class Qdrant(BaseModel):
         return 0  # Wait for more points or the streaming timeout.
 
     async def _ll_qd_query(
-        self, reqs: Iterable[rest.QueryRequest], /
+        self, reqs: Sequence[rest.QueryRequest], /
     ) -> list[Sequence[rest.ScoredPoint]]:
-        reqs = list(reqs)
         if not reqs:
             return []
         aw = self.aclient.query_batch_points(self.collection_name, reqs)
