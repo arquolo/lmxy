@@ -1,12 +1,24 @@
 __all__ = ['synthesize']
 
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
+from contextlib import contextmanager
+
 from glow import span_task
 from llama_index.core import (
     BasePromptTemplate,
     PromptHelper,
     get_response_synthesizer,
 )
-from llama_index.core.callbacks import CallbackManager
+from llama_index.core.base.llms.types import (
+    ChatMessage,
+    ChatResponse,
+    MessageRole,
+)
+from llama_index.core.callbacks import (
+    CallbackManager,
+    CBEventType,
+    EventPayload,
+)
 from llama_index.core.llms.llm import LLM
 from llama_index.core.prompts.default_prompt_selectors import (
     DEFAULT_REFINE_PROMPT_SEL,
@@ -18,7 +30,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from ._responses import tokens_from_response
-from ._types import Tokenize, Tokens, get_full_response
+from ._types import Tokenize, Tokens
 
 
 @span_task
@@ -70,6 +82,8 @@ async def synthesize(
     - COMPACT_ACCUMULATE - concat of local summaries, O(n tokens).
         Same as ACCUMULATE but with initial node repacking
     """
+    callback_manager = callback_manager or CallbackManager()
+
     prompt_helper = PromptHelper(
         context_window=llm.metadata.context_window,
         num_output=max(llm.metadata.num_output, 0) or 256,
@@ -131,16 +145,75 @@ async def synthesize(
             text_chunks += reversed(repacked)
             kwds = {'context_msg': chunk}
 
+        if not llm.metadata.is_chat_model:
+            raise ValueError('Expected chat LLM')
+
         try:
-            agen = await llm.astream(prompt, **kwds)
+            msgs = prompt.format_messages(llm, **kwds)
+            if llm.system_prompt:
+                msgs = [
+                    ChatMessage(llm.system_prompt, role=MessageRole.SYSTEM),
+                    *msgs,
+                ]
             if not text_chunks:  # Last chunk, do stream
-                return Tokens(agen)
-            if answer := await get_full_response(agen):
-                rstr = answer
+                return Tokens(_astream_chat(llm, msgs, callback_manager))
+
+            with _llm_context(callback_manager) as end_event:
+                rsp_ = await llm.achat(msgs)
+                end_event(
+                    {EventPayload.MESSAGES: msgs, EventPayload.RESPONSE: rsp_}
+                )
+            if rstr_ := rsp_.message.content:
+                rstr = rstr_
+
         except (ValidationError, ValueError, TypeError) as e:
             logger.warning(f'LLM response error: {e}', exc_info=True)
 
     return Tokens(rstr)
+
+
+async def _astream_chat(
+    llm: LLM,
+    messages: Sequence[ChatMessage],
+    callback_manager: CallbackManager,
+) -> AsyncGenerator[str]:
+    rsp = ChatResponse(message=ChatMessage('', role=MessageRole.ASSISTANT))
+    content = ''
+
+    with _llm_context(callback_manager) as end_event:
+        async for rsp in await llm.astream_chat(messages):
+            chunk = rsp.delta or ''
+            if rsp.message.content is None:
+                content += chunk
+                rsp.message.content = content
+            yield chunk
+        end_event(
+            {EventPayload.MESSAGES: messages, EventPayload.RESPONSE: rsp}
+        )
+
+
+@contextmanager
+def _llm_context(
+    callback_manager: CallbackManager,
+) -> Generator[Callable[[dict], None]]:
+    event_id = callback_manager.on_event_start(CBEventType.LLM)
+    finished = False
+
+    def end_event(payload: dict | None = None) -> None:
+        nonlocal finished
+        if not finished:
+            callback_manager.on_event_end(CBEventType.LLM, payload, event_id)
+        finished = True
+
+    try:
+        yield end_event
+    except BaseException as exc:
+        if not hasattr(exc, 'event_added'):
+            exc.event_added = True  # type: ignore
+        end_event({EventPayload.EXCEPTION: exc})
+        raise
+    finally:
+        end_event()
 
 
 def _get_prompt_size(prompt: BasePromptTemplate) -> int:

@@ -3,6 +3,7 @@ __all__ = ['CrossEvaluator', 'Reranker']
 from asyncio import Future
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
+from itertools import batched
 from typing import Any
 
 from httpx import (
@@ -14,7 +15,6 @@ from httpx import (
     Response,
     Timeout,
 )
-from itertools import batched
 from pydantic import BaseModel, Field, TypeAdapter
 
 from .http import aclient, client, raise_for_status

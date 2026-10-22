@@ -11,8 +11,8 @@ from llama_index.core.callbacks import (
 )
 from llama_index.core.schema import MetadataMode, NodeWithScore, QueryBundle
 
-from .rerank import CrossEvaluator
 from .http import aclient, client
+from .rerank import CrossEvaluator
 
 
 class LlamaReranker:
