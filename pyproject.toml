@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.8.17"
+version = "0.8.18"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.13, <3.15"
@@ -53,7 +53,7 @@ fastembed = [
     # ! thus for py3.14 you'll need rustup (and msvc for windows).
     # ! rustup-init could be installed without admin privileges
     # ! For msvc without admin - use PortableBuildTools
-    "fastembed >=0.7.0, <0.9",
+    "fastembed >=0.7.0, <0.10",
 ]
 openailike = [
     "lmxy[base,tokenizer]",

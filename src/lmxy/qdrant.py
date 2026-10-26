@@ -4,7 +4,13 @@ __all__ = ['Qdrant']
 
 import asyncio
 from asyncio import TaskGroup
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Generator,
+    Sequence,
+)
 from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
@@ -367,6 +373,26 @@ class Qdrant(BaseModel):
             self,
             with_payload=with_payload,
         )
+
+    async def scroll(
+        self,
+        where: rest.Filter,
+        with_payload: Sequence[str] | bool = True,
+        batch_size: int = 100,
+    ) -> AsyncGenerator[ScoredRecord]:
+        offset = None
+        while True:
+            points, offset = await self.aclient.scroll(
+                self.collection_name,
+                where,
+                limit=batch_size,
+                offset=offset,
+                with_payload=with_payload,
+            )
+            for pt in points:
+                yield _qd_to_record(pt, self.dense_field_name)
+            if len(points) < batch_size or offset is None:
+                return
 
     async def qd_retrieve(
         self,
@@ -764,7 +790,7 @@ class _Request:
             return []
         [pts] = ptss
         _log_scores(pts)
-        return [_qd_to_record(pt) for pt in pts]
+        return [_qd_to_record(pt, self.qd.dense_field_name) for pt in pts]
 
     async def hsf(
         self,
@@ -799,7 +825,7 @@ class _Request:
 
         pts = sorted(pts, key=lambda p: p.score, reverse=True)[:limit]
         _log_scores(pts, name='fused records')
-        return [_qd_to_record(pt) for pt in pts]
+        return [_qd_to_record(pt, self.qd.dense_field_name) for pt in pts]
 
     async def acall(self) -> list[ScoredRecord]:
         ptss = await self.qd._resolve(
@@ -809,7 +835,7 @@ class _Request:
             return []
         [points] = ptss
         _log_scores(points)
-        return [_qd_to_record(pt) for pt in points]
+        return [_qd_to_record(pt, self.qd.dense_field_name) for pt in points]
 
 
 def _min_max_scores(
