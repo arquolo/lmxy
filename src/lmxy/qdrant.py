@@ -14,7 +14,8 @@ from collections.abc import (
 from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
-from glow import streaming
+import qdrant_client.http.models as qm
+from glow import flatten_exc, streaming
 from grpc import RpcError, StatusCode
 from grpc.aio import AioRpcError
 from loguru import logger
@@ -23,13 +24,7 @@ from pydantic_core import to_json
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.conversions.common_types import QuantizationConfig
 from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
-from qdrant_client.http import models as rest
 from qdrant_client.http.exceptions import UnexpectedResponse
-
-try:  # Qdrant 1.16+
-    from qdrant_client.http.models import Rrf, RrfQuery  # type: ignore
-except ImportError:
-    Rrf = RrfQuery = None  # type: ignore
 
 from ._retry import aretry
 from ._types import Embedding, SparseEncode
@@ -43,7 +38,7 @@ type DenseQuery = tuple[Embedding, int, float | None]
 type SparseQuery = tuple[str, int]
 type FusionMode = Literal['hsf', 'rrf', 'dbsf']
 
-_SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, rest.Modifier.IDF)
+_SPARSE_MODIFIERS = dict.fromkeys(IDF_EMBEDDING_MODELS, qm.Modifier.IDF)
 _LOCK = asyncio.Lock()
 _log = logger.opt(depth=1)
 
@@ -92,17 +87,17 @@ class Qdrant(BaseModel):
     retries: int | None = 3  # None = retry forever
 
     # Collection construction parameters
-    dense_config: rest.VectorParams = rest.VectorParams(
+    dense_config: qm.VectorParams = qm.VectorParams(
         size=0,
-        distance=rest.Distance.COSINE,
-        multivector_config=rest.MultiVectorConfig(
-            comparator=rest.MultiVectorComparator.MAX_SIM
+        distance=qm.Distance.COSINE,
+        multivector_config=qm.MultiVectorConfig(
+            comparator=qm.MultiVectorComparator.MAX_SIM
         ),
     )
-    sparse_config: rest.SparseVectorParams = rest.SparseVectorParams()
+    sparse_config: qm.SparseVectorParams = qm.SparseVectorParams()
     shard_number: int | None = None
-    hnsw_config: rest.HnswConfigDiff | None = None
-    optimizers_config: rest.OptimizersConfigDiff | None = None
+    hnsw_config: qm.HnswConfigDiff | None = None
+    optimizers_config: qm.OptimizersConfigDiff | None = None
     quantization_config: QuantizationConfig | None = None
     kw_fields: list[str] = []  # For search
     int_fields: list[str] = []  # For search
@@ -120,8 +115,8 @@ class Qdrant(BaseModel):
     sparse_field_name: str = 'text-sparse'
 
     _qd_query: Callable[
-        [Sequence[rest.QueryRequest]],
-        Awaitable[list[Sequence[rest.ScoredPoint]]],
+        [Sequence[qm.QueryRequest]],
+        Awaitable[list[Sequence[qm.ScoredPoint]]],
     ] = PrivateAttr()
     _update: Callable[
         [Sequence[EmbedRecord | _Id]],
@@ -215,20 +210,20 @@ class Qdrant(BaseModel):
         await self._setup_indices()
 
     async def _setup_indices(self) -> None:
-        tenant_schema = rest.KeywordIndexParams(
-            type=rest.KeywordIndexType.KEYWORD, is_tenant=True
+        tenant_schema = qm.KeywordIndexParams(
+            type=qm.KeywordIndexType.KEYWORD, is_tenant=True
         )
         name_n_schema = (
             [
-                (field, rest.PayloadSchemaType.KEYWORD)
+                (field, qm.PayloadSchemaType.KEYWORD)
                 for field in {'doc_id', *self.kw_fields}
             ]
             + [
-                (field, rest.PayloadSchemaType.INTEGER)
+                (field, qm.PayloadSchemaType.INTEGER)
                 for field in self.int_fields
             ]
             + [
-                (field, rest.PayloadSchemaType.UUID)
+                (field, qm.PayloadSchemaType.UUID)
                 for field in self.uuid_fields
             ]
             + [(field, tenant_schema) for field in self.tenant_fields]
@@ -313,7 +308,7 @@ class Qdrant(BaseModel):
         self,
         ids: Sequence[_Id],
         *,
-        with_payload: Sequence[str] | bool = True,
+        with_payload: qm.WithPayloadInterface | Sequence[str] = True,
     ) -> list[ScoredRecord]:
         points = await self.qd_retrieve(ids, with_payload=with_payload)
         return [_qd_to_record(pt, self.dense_field_name) for pt in points]
@@ -324,8 +319,8 @@ class Qdrant(BaseModel):
         sparse: SparseQuery | None = None,
         *,
         fuse: tuple[int, float, FusionMode] = (1, 0.5, 'hsf'),
-        filters: rest.Filter | None = None,
-        with_payload: Sequence[str] | bool = True,
+        filters: qm.Filter | None = None,
+        with_payload: qm.WithPayloadInterface | Sequence[str] = True,
     ) -> list[ScoredRecord]:
         dq = sq = None
         k, alpha, mode = fuse
@@ -365,9 +360,11 @@ class Qdrant(BaseModel):
         q: str | Embedding | None = None,
         limit: int = 1,
         threshold: float | None = None,
-        filters: rest.Filter | None = None,
-        with_payload: Sequence[str] | bool = True,
+        filters: qm.Filter | None = None,
+        with_payload: qm.WithPayloadInterface | Sequence[str] = True,
     ) -> '_Request':
+        if isinstance(with_payload, Sequence):
+            with_payload = list(with_payload)
         return _Request(
             lambda: self._make_qd_query(q, limit, threshold, filters=filters),
             self,
@@ -376,10 +373,12 @@ class Qdrant(BaseModel):
 
     async def scroll(
         self,
-        where: rest.Filter,
-        with_payload: Sequence[str] | bool = True,
+        where: qm.Filter,
+        with_payload: qm.WithPayloadInterface | Sequence[str] = True,
         batch_size: int = 100,
     ) -> AsyncGenerator[ScoredRecord]:
+        if isinstance(with_payload, Sequence):
+            with_payload = list(with_payload)
         offset = None
         while True:
             points, offset = await self.aclient.scroll(
@@ -397,30 +396,26 @@ class Qdrant(BaseModel):
     async def qd_retrieve(
         self,
         ids: Sequence[_Id],
-        with_payload: Sequence[str] | bool = True,
-    ) -> list[rest.Record]:
+        with_payload: qm.WithPayloadInterface | Sequence[str] = True,
+    ) -> list[qm.Record]:
+        if isinstance(with_payload, Sequence):
+            with_payload = list(with_payload)
         aw = self.aclient.retrieve(self.collection_name, ids, with_payload)
         try:
             return await aw
-        except AioRpcError as e:
-            if e.code() is StatusCode.NOT_FOUND:
-                _log.warning(f'Not initialized: {self.collection_name}')
-                return []
-            raise
-        except UnexpectedResponse as e:
-            if e.status_code == 404:
-                _log.warning(f'Not initialized: {self.collection_name}')
-                return []
-            raise
+        except (AioRpcError, UnexpectedResponse) as exc1:
+            if exc2 := self._remove_404_errors(exc1):
+                raise exc2 from None
+            return []
 
     async def qd_query(
         self,
         q: str | Embedding | None = None,
         limit: int = 1,
         threshold: float | None = None,
-        filters: rest.Filter | None = None,
-        with_payload: Sequence[str] | bool = True,
-    ) -> list[rest.Record | rest.ScoredPoint]:
+        filters: qm.Filter | None = None,
+        with_payload: qm.WithPayloadInterface | Sequence[str] = True,
+    ) -> list[qm.Record | qm.ScoredPoint]:
         if isinstance(with_payload, Sequence):
             with_payload = list(with_payload)
         ptss = await self._resolve(
@@ -434,8 +429,8 @@ class Qdrant(BaseModel):
         q: str | Embedding | None = None,
         limit: int = 1,
         threshold: float | None = None,
-        filters: rest.Filter | None = None,
-    ) -> rest.Prefetch | None:
+        filters: qm.Filter | None = None,
+    ) -> qm.Prefetch | None:
         if not limit:
             return None
         await self._load_models()
@@ -443,10 +438,10 @@ class Qdrant(BaseModel):
         if q is None:  # Scroll
             if threshold is not None:
                 raise ValueError('score_threshold requires query')
-            return rest.Prefetch(query=q, filter=filters, limit=limit)
+            return qm.Prefetch(query=q, filter=filters, limit=limit)
 
         if not isinstance(q, str):  # Dense embedding
-            return rest.Prefetch(
+            return qm.Prefetch(
                 query=q,
                 using=self.dense_field_name,
                 filter=filters,
@@ -465,8 +460,8 @@ class Qdrant(BaseModel):
             raise ValueError(msg)
 
         [(ids, vals)] = await asyncio.to_thread(self.sparse_query_fn, [q])
-        return rest.Prefetch(
-            query=rest.SparseVector(indices=ids, values=vals),
+        return qm.Prefetch(
+            query=qm.SparseVector(indices=ids, values=vals),
             using=self.sparse_field_name,
             filter=filters,
             score_threshold=threshold,
@@ -484,7 +479,7 @@ class Qdrant(BaseModel):
         for k, v in kvs:
             groups.setdefault(k, []).append(v)
         if should := [
-            rest.FieldCondition(key=k, match=rest.MatchAny(any=vs))
+            qm.FieldCondition(key=k, match=qm.MatchAny(any=vs))
             for k, vs in groups.items()
         ]:
             await self.delete_where(should=should)
@@ -494,12 +489,12 @@ class Qdrant(BaseModel):
     async def delete_where(
         self,
         *,
-        should: Sequence[rest.Condition] = (),
-        min_should: rest.MinShould | None = None,
-        must: Sequence[rest.Condition] = (),
-        must_not: Sequence[rest.Condition] = (),
+        should: Sequence[qm.Condition] = (),
+        min_should: qm.MinShould | None = None,
+        must: Sequence[qm.Condition] = (),
+        must_not: Sequence[qm.Condition] = (),
     ) -> None:
-        where = rest.Filter(
+        where = qm.Filter(
             should=list(should),
             min_should=min_should,
             must=list(must),
@@ -507,16 +502,10 @@ class Qdrant(BaseModel):
         )
         try:
             await self.aclient.delete(self.collection_name, where)
-        except AioRpcError as e:
-            if e.code() is StatusCode.NOT_FOUND:
-                _log.warning(f'Not initialized: {self.collection_name}')
-                return
-            raise
-        except UnexpectedResponse as e:
-            if e.status_code == 404:
-                _log.warning(f'Not initialized: {self.collection_name}')
-                return
-            raise
+        except (AioRpcError, UnexpectedResponse) as exc1:
+            if exc2 := self._remove_404_errors(exc1):
+                raise exc2 from None
+            return
 
     # CRUD: delete
     async def delete(self, ids: Sequence[str], /) -> None:
@@ -531,15 +520,15 @@ class Qdrant(BaseModel):
 
     async def _resolve(
         self,
-        *subqueries: Callable[[], Awaitable[rest.Prefetch | None]],
-        with_payload: list[str] | bool = True,
-        query: rest.QueryInterface | None = None,
+        *subqueries: Callable[[], Awaitable[qm.Prefetch | None]],
+        with_payload: qm.WithPayloadInterface = True,
+        query: qm.QueryInterface | None = None,
         limit: int = 1,
-    ) -> list[Sequence[rest.ScoredPoint]]:
+    ) -> list[Sequence[qm.ScoredPoint]]:
         pfs = await asyncio.gather(*(cr() for cr in subqueries))
         prefetches = [p for p in pfs if p]
         if query is not None and len(prefetches) > 1:
-            req = rest.QueryRequest(
+            req = qm.QueryRequest(
                 prefetch=prefetches,
                 query=query,
                 limit=limit,
@@ -549,7 +538,7 @@ class Qdrant(BaseModel):
             return [pts] if pts else []
 
         reqs = [
-            rest.QueryRequest(
+            qm.QueryRequest(
                 query=p.query,
                 using=p.using,
                 filter=p.filter,
@@ -561,7 +550,7 @@ class Qdrant(BaseModel):
         ]
         return [pts for pts in await self._qd_query(reqs) if pts]
 
-    async def _ll_update(  # noqa: C901
+    async def _ll_update(
         self, records: Sequence[EmbedRecord | _Id], /
     ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
@@ -575,33 +564,26 @@ class Qdrant(BaseModel):
                 ids.append(r['id_'])
                 actions[r['id_']] = r
 
+        recs = [a for a in actions.values() if a]
+        if recs:
+            vecs = (v for r in recs for v in r.get('embeddings', []))
+            vec = next(vecs, None)
+            if vec is None:
+                raise ValueError('No dense vectors to store')
+            await self.initialize(len(vec))
+
         try:
             async with asyncio.TaskGroup() as tg:
-                if recs := [a for a in actions.values() if a]:
-                    vecs = (v for r in recs for v in r.get('embeddings', []))
-                    vec = next(vecs, None)
-                    if vec is None:
-                        raise ValueError('No dense vectors to store')
-                    await self.initialize(len(vec))
+                if recs:
                     tg.create_task(self._ll_upsert(recs))
 
                 if rm_ids := [i for i, a in actions.items() if not a]:
                     tg.create_task(
                         self.aclient.delete(self.collection_name, list(rm_ids))
                     )
-        except* AioRpcError as eg:
-            errors = cast('list[AioRpcError]', eg.exceptions)
-            if any(e.code() == StatusCode.NOT_FOUND for e in errors):
-                _log.warning(f'Not initialized: {self.collection_name}')
-            if rest := [e for e in errors if e.code() != StatusCode.NOT_FOUND]:
-                raise eg.derive(rest) from eg
-        except* UnexpectedResponse as eg:
-            errors = cast('list[UnexpectedResponse]', eg.exceptions)
-            if any(e.status_code == 404 for e in errors):
-                _log.warning(f'Not initialized: {self.collection_name}')
-            if rest := [e for e in errors if e.status_code != 404]:
-                raise eg.derive(rest) from eg
-
+        except BaseException as exc1:  # noqa: BLE001
+            if exc2 := self._remove_404_errors(exc1):
+                raise exc2 from None
         return ids
 
     async def _ll_upsert(self, recs: Sequence[EmbedRecord]) -> None:
@@ -629,33 +611,46 @@ class Qdrant(BaseModel):
         return 0  # Wait for more points or the streaming timeout.
 
     async def _ll_qd_query(
-        self, reqs: Sequence[rest.QueryRequest], /
-    ) -> list[Sequence[rest.ScoredPoint]]:
+        self, reqs: Sequence[qm.QueryRequest], /
+    ) -> list[Sequence[qm.ScoredPoint]]:
         if not reqs:
             return []
         aw = self.aclient.query_batch_points(self.collection_name, reqs)
         try:
             qrs = await aw
-        except AioRpcError as e:
-            if e.code() is StatusCode.NOT_FOUND:
-                _log.warning(f'Not initialized: {self.collection_name}')
-                return [[] for _ in reqs]
-            raise
-        except UnexpectedResponse as e:
-            if e.status_code == 404:
-                _log.warning(f'Not initialized: {self.collection_name}')
-                return [[] for _ in reqs]
-            raise
+        except (AioRpcError, UnexpectedResponse) as exc1:
+            if exc2 := self._remove_404_errors(exc1):
+                raise exc2 from None
+            return [[] for _ in reqs]
         return [r.points for r in qrs]
+
+    def _remove_404_errors(self, ex: BaseException) -> BaseException | None:
+        ex = flatten_exc(ex)
+        exs: list[BaseException] = []
+        not_found = False
+        for e in ex.exceptions if isinstance(ex, BaseExceptionGroup) else [ex]:
+            if (
+                isinstance(e, UnexpectedResponse) and e.status_code == 404
+            ) or (
+                isinstance(e, AioRpcError) and e.code() == StatusCode.NOT_FOUND
+            ):
+                not_found = True
+            else:
+                exs.append(e)
+        if not_found:
+            _log.warning(f'Not initialized: {self.collection_name}')
+        if not exs:
+            return None
+        return flatten_exc(BaseExceptionGroup('Got multiple errors', exs))
 
 
 async def _aembed_sparse_records(
     fn: SparseEncode | None, records: Sequence[EmbedRecord]
-) -> list[rest.SparseVector | None]:
+) -> list[qm.SparseVector | None]:
     if not fn:
         return [None for _ in records]
 
-    vectors: list[rest.SparseVector | None] = []
+    vectors: list[qm.SparseVector | None] = []
     embed_ids: list[int] = []
     embed_texts: list[str] = []
     for i, r in enumerate(records):
@@ -667,7 +662,7 @@ async def _aembed_sparse_records(
     if embed_texts:
         svecs = await asyncio.to_thread(fn, embed_texts)
         for i, (ids, vs) in zip(embed_ids, svecs, strict=True):
-            vectors[i] = rest.SparseVector(indices=ids, values=vs)
+            vectors[i] = qm.SparseVector(indices=ids, values=vs)
 
     return vectors
 
@@ -679,9 +674,9 @@ def _record_to_qd(
     record: EmbedRecord,
     dense_field: str,
     sparse_field: str,
-    sparse_vec: rest.SparseVector | None = None,
-) -> rest.PointStruct:
-    vector: dict[str, rest.Vector] = {}
+    sparse_vec: qm.SparseVector | None = None,
+) -> qm.PointStruct:
+    vector: dict[str, qm.Vector] = {}
     if dembs := record.get('embeddings'):
         vector[dense_field] = dembs
     if sparse_vec is not None:
@@ -690,21 +685,21 @@ def _record_to_qd(
         raise ValueError(f'Embedding is not set: keys={record.keys()}')
 
     try:
-        return rest.PointStruct(
+        return qm.PointStruct(
             id=record['id_'], vector=vector, payload=record['data']
         )
     except ValidationError:
-        return rest.PointStruct(
+        return qm.PointStruct(
             id=str(record['id_']), vector=vector, payload=record['data']
         )
 
 
 def _qd_to_record(
-    pt: rest.Record | rest.ScoredPoint,
+    pt: qm.Record | qm.ScoredPoint,
     dense_field_name: str = 'text-dense',
 ) -> ScoredRecord:
     assert pt.payload is not None
-    s = pt.score if isinstance(pt, rest.ScoredPoint) else 1.0
+    s = pt.score if isinstance(pt, qm.ScoredPoint) else 1.0
     rec = ScoredRecord(id_=pt.id, data=pt.payload, score=s)
 
     vecs = pt.vector
@@ -714,7 +709,7 @@ def _qd_to_record(
         raise TypeError('Anonimous dense vectors are not supported')
     vec_or_vecs = vecs.get(dense_field_name)
     if vec_or_vecs is not None:
-        if isinstance(vec_or_vecs, rest.SparseVector):
+        if isinstance(vec_or_vecs, qm.SparseVector):
             raise TypeError('sparse vector in dense field')
         rec['embeddings'] = (
             cast('list[Embedding]', vec_or_vecs)
@@ -728,14 +723,12 @@ def _qd_to_record(
 class _Request:
     def __init__(
         self,
-        query: Callable[[], Awaitable[rest.Prefetch | None]],
+        query: Callable[[], Awaitable[qm.Prefetch | None]],
         qd: Qdrant,
-        with_payload: Sequence[str] | bool = True,
+        with_payload: qm.WithPayloadInterface = True,
     ) -> None:
         self.query = query
         self.qd = qd
-        if isinstance(with_payload, Sequence):
-            with_payload = list(with_payload)
         self.with_payload = with_payload
 
     def __await__(self) -> Generator[Any, Any, list[ScoredRecord]]:
@@ -749,33 +742,24 @@ class _Request:
         mode: FusionMode = 'hsf',
         rrf_k: int | None = None,
     ) -> list[ScoredRecord]:
+        q: qm.QueryInterface
         match mode:
             case 'hsf':
                 return await self.hsf(other, t, limit)
+
             case 'rrf':
-                if RrfQuery and Rrf:  # type: ignore  # Qdrant 1.16+
-                    if hasattr(Rrf, 'weights'):  # Qdrant 1.17+
-                        rrf = Rrf(k=rrf_k, weights=[1 - t, t])  # type: ignore
-                    elif t != 0.5:
-                        raise ValueError('Qdrant<1.17 has no RRF `weights`')
-                    else:
-                        rrf = Rrf(k=rrf_k)
-                    q = RrfQuery(rrf=rrf)
-                elif rrf_k is not None:
-                    raise ValueError('Qdrant<1.16 has no RRF `k`')
-                else:
-                    q = rest.FusionQuery(fusion=rest.Fusion.RRF)
+                weights = [1 - t, t] if t != 0.5 else None
+                q = qm.RrfQuery(rrf=qm.Rrf(k=rrf_k, weights=weights))
                 return await self._fuse(other, q, limit=limit)
+
             case 'dbsf':
-                return await self._fuse(
-                    other,
-                    rest.FusionQuery(fusion=rest.Fusion.DBSF),
-                    limit=limit,
-                )
+                q = qm.FusionQuery(fusion=qm.Fusion.DBSF)
+                return await self._fuse(other, q, limit=limit)
+
         raise NotImplementedError
 
     async def _fuse(
-        self, other: '_Request', query: rest.QueryInterface, limit: int = 1
+        self, other: '_Request', query: qm.QueryInterface, limit: int = 1
     ) -> list[ScoredRecord]:
         if limit <= 0:
             return []
@@ -839,16 +823,14 @@ class _Request:
 
 
 def _min_max_scores(
-    pts: Sequence[rest.ScoredPoint],
-) -> dict[rest.ExtendedPointId, float]:
+    pts: Sequence[qm.ScoredPoint],
+) -> dict[qm.ExtendedPointId, float]:
     return dict(
         zip([p.id for p in pts], min_max(p.score for p in pts), strict=True)
     )
 
 
-def _log_scores(
-    pts: Sequence[rest.ScoredPoint], name: str = 'records'
-) -> None:
+def _log_scores(pts: Sequence[qm.ScoredPoint], name: str = 'records') -> None:
     scores = [p.score for p in pts]
     if not any(scores):
         return

@@ -7,7 +7,7 @@ only-packages = true
 
 [project]
 name = "lmxy"
-version = "0.8.18"
+version = "0.8.19"
 description = "Language models extensions"
 readme = "README.md"
 requires-python = ">=3.13, <3.15"
@@ -29,7 +29,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp~=3.10",
-    "glow~=0.16.0",
+    "glow~=0.16.14",
     "httpx",
     "pydantic~=2.10",
     "pydantic-settings",
@@ -62,7 +62,7 @@ openailike = [
 qdrant = [
     "lmxy[base,fastembed]",
     "grpcio",  # transitive
-    "qdrant-client >=1.15.1, <1.19",
+    "qdrant-client >=1.17.0, <1.21",
 ]
 bert_score = [
     "tqdm",
