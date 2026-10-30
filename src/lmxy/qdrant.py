@@ -103,6 +103,7 @@ class Qdrant(BaseModel):
     int_fields: list[str] = []  # For search
     uuid_fields: list[str] = []  # For search
     tenant_fields: list[str] = []  # For multitenancy
+    datetime_fields: list[str] = []  # For search
 
     # Sparse search parameters
     sparse_doc_fn: SparseEncode | None = None
@@ -213,21 +214,19 @@ class Qdrant(BaseModel):
         tenant_schema = qm.KeywordIndexParams(
             type=qm.KeywordIndexType.KEYWORD, is_tenant=True
         )
-        name_n_schema = (
-            [
-                (field, qm.PayloadSchemaType.KEYWORD)
-                for field in {'doc_id', *self.kw_fields}
+        name_n_schema = [
+            (field, tp)
+            for tp, vs in [
+                (
+                    qm.PayloadSchemaType.KEYWORD,
+                    {'doc_id', *self.kw_fields},
+                ),
+                (qm.PayloadSchemaType.UUID, self.uuid_fields),
+                (qm.PayloadSchemaType.INTEGER, self.int_fields),
+                (qm.PayloadSchemaType.DATETIME, self.datetime_fields),
             ]
-            + [
-                (field, qm.PayloadSchemaType.INTEGER)
-                for field in self.int_fields
-            ]
-            + [
-                (field, qm.PayloadSchemaType.UUID)
-                for field in self.uuid_fields
-            ]
-            + [(field, tenant_schema) for field in self.tenant_fields]
-        )
+            for field in vs
+        ] + [(field, tenant_schema) for field in self.tenant_fields]
 
         # To improve search performance set up a payload index
         # for fields used in filters.
