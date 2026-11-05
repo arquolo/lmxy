@@ -15,7 +15,7 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
 import qdrant_client.http.models as qm
-from glow import flatten_exc, streaming
+from glow import streaming
 from grpc import RpcError, StatusCode
 from grpc.aio import AioRpcError
 from loguru import logger
@@ -402,9 +402,9 @@ class Qdrant(BaseModel):
         aw = self.aclient.retrieve(self.collection_name, ids, with_payload)
         try:
             return await aw
-        except (AioRpcError, UnexpectedResponse) as exc1:
-            if exc2 := self._remove_404_errors(exc1):
-                raise exc2 from None
+        except (AioRpcError, UnexpectedResponse) as ex:
+            if self._filter_404(ex):
+                raise
             return []
 
     async def qd_query(
@@ -501,9 +501,9 @@ class Qdrant(BaseModel):
         )
         try:
             await self.aclient.delete(self.collection_name, where)
-        except (AioRpcError, UnexpectedResponse) as exc1:
-            if exc2 := self._remove_404_errors(exc1):
-                raise exc2 from None
+        except (AioRpcError, UnexpectedResponse) as ex:
+            if self._filter_404(ex):
+                raise
             return
 
     # CRUD: delete
@@ -580,9 +580,12 @@ class Qdrant(BaseModel):
                     tg.create_task(
                         self.aclient.delete(self.collection_name, list(rm_ids))
                     )
-        except BaseException as exc1:  # noqa: BLE001
-            if exc2 := self._remove_404_errors(exc1):
-                raise exc2 from None
+        except BaseExceptionGroup as eg:
+            excs = self._filter_404(*eg.exceptions)
+            if len(excs) >= 2:  # Original error
+                raise
+            if len(excs) == 1:  # Flatten
+                raise excs[0] from None
         return ids
 
     async def _ll_upsert(self, recs: Sequence[EmbedRecord]) -> None:
@@ -617,30 +620,27 @@ class Qdrant(BaseModel):
         aw = self.aclient.query_batch_points(self.collection_name, reqs)
         try:
             qrs = await aw
-        except (AioRpcError, UnexpectedResponse) as exc1:
-            if exc2 := self._remove_404_errors(exc1):
-                raise exc2 from None
+        except (AioRpcError, UnexpectedResponse) as ex:
+            if self._filter_404(ex):
+                raise
             return [[] for _ in reqs]
         return [r.points for r in qrs]
 
-    def _remove_404_errors(self, ex: BaseException) -> BaseException | None:
-        ex = flatten_exc(ex)
-        exs: list[BaseException] = []
-        not_found = False
-        for e in ex.exceptions if isinstance(ex, BaseExceptionGroup) else [ex]:
+    def _filter_404(self, *excs: BaseException) -> list[BaseException]:
+        no_init = False
+        errors: list[BaseException] = []
+        for e in excs:
             if (
                 isinstance(e, UnexpectedResponse) and e.status_code == 404
             ) or (
                 isinstance(e, AioRpcError) and e.code() == StatusCode.NOT_FOUND
             ):
-                not_found = True
+                no_init = True
             else:
-                exs.append(e)
-        if not_found:
+                errors.append(e)
+        if no_init:
             _log.warning(f'Not initialized: {self.collection_name}')
-        if not exs:
-            return None
-        return flatten_exc(BaseExceptionGroup('Got multiple errors', exs))
+        return errors
 
 
 async def _aembed_sparse_records(
