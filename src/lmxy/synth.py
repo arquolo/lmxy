@@ -116,7 +116,10 @@ async def synthesize(
     text_qa_q = text_qa_template.partial_format(query_str=query)
     refine_q = refine_template.partial_format(query_str=query)
 
-    max_prompt = max([text_qa_q, refine_q], key=_get_prompt_size)
+    max_prompt = max(
+        [text_qa_q, refine_q],
+        key=lambda p: len(tokenizer(_format_prompt(p))),
+    )
     text_chunks = [n.get_content(MetadataMode.LLM) for n in nodes]
     if response_mode is ResponseMode.COMPACT:
         text_chunks = prompt_helper.repack(
@@ -124,12 +127,11 @@ async def synthesize(
         )
     text_chunks = [
         c2
-        for c in text_chunks
-        for c2 in prompt_helper.repack(
-            max_prompt, [c], padding=padding, llm=llm
+        for c in reversed(text_chunks)
+        for c2 in reversed(
+            prompt_helper.repack(max_prompt, [c], padding=padding, llm=llm)
         )
     ]
-    text_chunks = text_chunks[::-1]  # First is last
     rstr: str | None = None
     while text_chunks:
         chunk = text_chunks.pop()
@@ -216,6 +218,6 @@ def _llm_context(
         end_event()
 
 
-def _get_prompt_size(prompt: BasePromptTemplate) -> int:
+def _format_prompt(prompt: BasePromptTemplate) -> str:
     all_kwargs = dict.fromkeys(prompt.template_vars, '') | prompt.kwargs
-    return len(prompt.format(llm=None, **all_kwargs))
+    return prompt.format(llm=None, **all_kwargs)
