@@ -467,6 +467,17 @@ class Qdrant(BaseModel):
             limit=limit,
         )
 
+    # CRUD: update
+    async def set_payload(
+        self,
+        payload: qm.Payload,
+        points: qm.PointsSelector,
+        key: str | None = None,
+    ) -> None:
+        await self.aclient.set_payload(
+            self.collection_name, payload, points, key
+        )
+
     # CRUD: delete
     async def delete_by(self, *values: str, key: str) -> None:
         await self._delete_by([(key, v) for v in values])
