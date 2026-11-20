@@ -122,7 +122,7 @@ class Qdrant(BaseModel):
         Awaitable[list[Sequence[qm.ScoredPoint]]],
     ] = PrivateAttr()
     _update: Callable[
-        [Sequence[EmbedRecord | _Id]],
+        [Sequence[qm.PointStruct | _Id]],
         Awaitable[list[_Id]],
     ] = PrivateAttr()
     _delete_by: Callable[
@@ -159,7 +159,7 @@ class Qdrant(BaseModel):
                 timeout=self.upsert_timeout,
             )
             update = deco(update)
-            delete_by = deco(delete_by)
+            delete_by = deco(delete_by)  # type: ignore[assignment]
         self._update = retry_(update)
         self._delete_by = retry_(delete_by)
 
@@ -302,7 +302,30 @@ class Qdrant(BaseModel):
 
     # CRUD: create
     async def add(self, records: Sequence[EmbedRecord]) -> list[_Id]:
-        return await self._update(records)
+        if not records:
+            return []
+        if not all(r.get('embeddings', []) for r in records):
+            raise ValueError('No dense vectors to store')
+
+        vec_size = len(records[0].get('embeddings', [])[0])
+        await self.initialize(vec_size)
+        await self._load_models()
+
+        svs = await _aembed_sparse_records(self.sparse_doc_fn, records)
+        aws = [
+            asyncio.to_thread(
+                _record_to_qd,
+                r,
+                dense_field=self.dense_field_name,
+                sparse_field=self.sparse_field_name,
+                sparse_vec=sv,
+                max_similarity=self.max_similarity,
+            )
+            for r, sv in zip(records, svs, strict=True)
+        ]
+        points = await asyncio.gather(*aws)
+        await self._update(points)
+        return [r['id_'] for r in records]
 
     # CRUD: read
     async def retrieve(
@@ -563,31 +586,23 @@ class Qdrant(BaseModel):
         return [pts for pts in await self._qd_query(reqs) if pts]
 
     async def _ll_update(
-        self, records: Sequence[EmbedRecord | _Id], /
+        self, items: Sequence[qm.PointStruct | _Id], /
     ) -> list[_Id]:
         # Merge and deduplicate updates & deletions
         ids: list[_Id] = []
-        actions: dict[_Id, EmbedRecord | None] = {}
-        for r in records:  # For same ID of add/rm last takes precedence
-            if isinstance(r, _Id):
-                ids.append(r)
-                actions[r] = None
+        actions: dict[_Id, qm.PointStruct | None] = {}
+        for x in items:  # For same ID of add/rm last takes precedence
+            if isinstance(x, _Id):
+                ids.append(x)
+                actions[x] = None
             else:
-                ids.append(r['id_'])
-                actions[r['id_']] = r
-
-        recs = [a for a in actions.values() if a]
-        if recs:
-            vecs = (v for r in recs for v in r.get('embeddings', []))
-            vec = next(vecs, None)
-            if vec is None:
-                raise ValueError('No dense vectors to store')
-            await self.initialize(len(vec))
+                ids.append(x.id)
+                actions[x.id] = x
 
         try:
             async with asyncio.TaskGroup() as tg:
-                if recs:
-                    tg.create_task(self._ll_upsert(recs))
+                if points := [a for a in actions.values() if a]:
+                    tg.create_task(self._ll_upsert(points))
 
                 if rm_ids := [i for i, a in actions.items() if not a]:
                     tg.create_task(
@@ -601,22 +616,10 @@ class Qdrant(BaseModel):
                 raise excs[0] from None
         return ids
 
-    async def _ll_upsert(self, recs: Sequence[EmbedRecord]) -> None:
-        await self._load_models()
-        svs = await _aembed_sparse_records(self.sparse_doc_fn, recs)
-        points = [
-            _record_to_qd(
-                r,
-                dense_field=self.dense_field_name,
-                sparse_field=self.sparse_field_name,
-                sparse_vec=sv,
-                max_similarity=self.max_similarity,
-            )
-            for r, sv in zip(recs, svs, strict=True)
-        ]
+    async def _ll_upsert(self, points: Sequence[qm.PointStruct]) -> None:
         await self.aclient.upsert(self.collection_name, points)
 
-    def _update_batch_size(self, items: list[_Id | EmbedRecord]) -> int:
+    def _update_batch_size(self, items: list[_Id | qm.PointStruct]) -> int:
         batch_bytes = 0
         for i, x in enumerate(items, 1):
             batch_bytes += len(to_json(x))
