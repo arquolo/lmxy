@@ -18,10 +18,12 @@ import qdrant_client.http.models as qm
 from glow import streaming
 from grpc import RpcError, StatusCode
 from grpc.aio import AioRpcError
+from httpx import Timeout
 from loguru import logger
 from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 from pydantic_core import to_json
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.async_qdrant_remote import AsyncQdrantRemote
 from qdrant_client.conversions.common_types import QuantizationConfig
 from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -116,6 +118,7 @@ class Qdrant(BaseModel):
     # Field names
     dense_field_name: str = 'text-dense'
     sparse_field_name: str = 'text-sparse'
+    v1_20: bool = False
 
     _qd_query: Callable[
         [Sequence[qm.QueryRequest]],
@@ -167,6 +170,93 @@ class Qdrant(BaseModel):
         self.sparse_config.modifier = modifier
         self._is_initialized = False
 
+    @classmethod
+    def create(
+        cls,
+        collection_name: str,
+        vector_size: int,
+        # connection
+        host: str,
+        port: int = 6333,
+        grpc_port: int = 6334,
+        prefer_grpc: bool = False,
+        retries: int | None = None,
+        # sparse model
+        sparse_model: str = 'Qdrant/bm25',
+        sparse_model_kwargs: dict[str, Any] | None = None,
+        # speed
+        upsert_timeout: float = 0.01,
+        query_timeout: float = 0.01,
+        upsert_batch_size: int = 64,
+        upsert_batch_bytes: int = 1024 * 1024,
+        query_batch_size: int = 10,
+        shard_number: int = 1,
+        # collection options
+        tenant_fields: Sequence[str] = (),
+    ) -> 'Qdrant':
+        aclient = AsyncQdrantClient(
+            port=port,
+            grpc_port=grpc_port,
+            prefer_grpc=prefer_grpc,
+            host=host,
+        )
+        assert isinstance(aclient._client, AsyncQdrantRemote)
+        aclient._client.http.client._async_client.timeout = Timeout(None)
+
+        dense_config = qm.VectorParams(
+            size=vector_size,
+            distance=qm.Distance.COSINE,
+            datatype=qm.Datatype.FLOAT32,
+            memory=qm.Memory.CACHED,
+        )
+        hnsw_config = qm.HnswConfigDiff(
+            # Number of edges per node (16).
+            # 12-16, higher = more accuracy / more memory.
+            m=0,
+            payload_m=32,
+            # Size of the dynamic candidate list during construction (100).
+            # 100-200, higher = better quality / slower construct.
+            ef_construct=64,
+            # Threshold for using HNSW vs exhaustive search (10000)
+            # 5000-20000 depending on vector dimensions.
+            full_scan_threshold=10_000,
+            memory=qm.Memory.CACHED,
+        )
+        optimizers_config = qm.OptimizersConfigDiff(
+            flush_interval_sec=5,
+            # When to start building index (20000), 10k-20k
+            indexing_threshold=20_000,
+            # When to switch to disk-based storage (None), 2-5x indexing
+            memmap_threshold=50_000,
+            # Target number of segments (0).
+            # 3-7, higher = faster updates / slower search.
+            default_segment_number=4,
+            # GC thresholds
+            vacuum_min_vector_number=1_000,  # as count per segment
+            deleted_threshold=0.2,  # fraction of segment
+        )
+
+        return cls(
+            collection_name=collection_name,
+            aclient=aclient,
+            # speed
+            upsert_timeout=upsert_timeout,
+            query_timeout=query_timeout,
+            upsert_batch_size=upsert_batch_size,
+            upsert_batch_bytes=upsert_batch_bytes,
+            query_batch_size=query_batch_size,
+            retries=retries,
+            # collection construction
+            dense_config=dense_config,
+            shard_number=shard_number,  # To allow parallel indexing
+            hnsw_config=hnsw_config,
+            tenant_fields=list(tenant_fields),
+            optimizers_config=optimizers_config,
+            # sparsity
+            sparse_model=sparse_model,
+            sparse_model_kwargs=sparse_model_kwargs or {},
+        )
+
     async def initialize(self, vector_size: int) -> None:
         if self._is_initialized:
             return
@@ -216,7 +306,9 @@ class Qdrant(BaseModel):
         tenant_schema = qm.KeywordIndexParams(
             type=qm.KeywordIndexType.KEYWORD, is_tenant=True
         )
-        name_n_schema = [
+        name_n_schema: list[
+            tuple[str, qm.PayloadSchemaType | qm.PayloadSchemaParams]
+        ] = [
             (field, tp)
             for tp, vs in [
                 (
@@ -229,6 +321,15 @@ class Qdrant(BaseModel):
             ]
             for field in vs
         ] + [(field, tenant_schema) for field in self.tenant_fields]
+
+        if self.v1_20:
+            ps = qm.TextIndexParams(
+                type=qm.TextIndexType.TEXT,
+                tokenizer=qm.TokenizerType.WORD,
+                lowercase=True,
+                scoring=qm.TextScoringParams(type=qm.TextScoringType.BM25),
+            )
+            name_n_schema += [(self.sparse_field_name, ps)]
 
         # To improve search performance set up a payload index
         # for fields used in filters.
@@ -256,6 +357,10 @@ class Qdrant(BaseModel):
             )
             raise TypeError(msg)
 
+        self._validate_collection_vectors(
+            dense, info.config.params.sparse_vectors
+        )
+
         sparse = info.config.params.sparse_vectors
         if isinstance(sparse, dict) and self.sparse_field_name in sparse:
             if not self.sparse_query_fn:
@@ -278,6 +383,53 @@ class Qdrant(BaseModel):
 
         self._is_initialized = True
         return True
+
+    def _validate_collection_vectors(
+        self,
+        dense: dict[str, qm.VectorParams],
+        sparse: dict[str, qm.SparseVectorParams] | None,
+    ) -> None:
+        prefix = f'Incompatible collection {self.collection_name!r}'
+        actual = dense.get(self.dense_field_name)
+        if actual is None:
+            raise ValueError(
+                f'{prefix}: missing dense vector {self.dense_field_name!r}'
+            )
+        expected = self.dense_config
+        checks: dict[str, tuple[object, object]] = {
+            'distance': (expected.distance, actual.distance),
+            'multivector_config': (
+                expected.multivector_config,
+                actual.multivector_config,
+            ),
+        }
+        if expected.size:
+            checks['size'] = (expected.size, actual.size)
+        for name, (wanted, found) in checks.items():
+            if wanted != found:
+                raise ValueError(
+                    f'{prefix}: dense vector {self.dense_field_name!r} '
+                    f'{name}: expected {wanted!r}, got {found!r}'
+                )
+
+        sparse_enabled = self.sparse_model is not None or bool(
+            self.sparse_query_fn or self.sparse_doc_fn
+        )
+        if sparse_enabled:
+            actual_sparse = (sparse or {}).get(self.sparse_field_name)
+            if actual_sparse is None:
+                raise ValueError(
+                    f'{prefix}: missing sparse vector '
+                    f'{self.sparse_field_name!r}'
+                )
+            if actual_sparse.modifier != self.sparse_config.modifier:
+                raise ValueError(
+                    f'{prefix}: sparse vector {self.sparse_field_name!r} '
+                    f'modifier: expected {self.sparse_config.modifier!r}, '
+                    f'got {actual_sparse.modifier!r}'
+                )
+
+        self.dense_config.size = actual.size
 
     async def _load_models(self) -> None:
         if self.sparse_model is None or (

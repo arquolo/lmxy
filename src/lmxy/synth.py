@@ -115,16 +115,28 @@ async def synthesize(
     # Repack chunks, loop & stream for last chunk only
     text_qa_q = text_qa_template.partial_format(query_str=query)
     refine_q = refine_template.partial_format(query_str=query)
+    # print(
+    #     'text:',
+    #     _get_prompt_size(text_qa_q),
+    #     _get_prompt_size_tks(text_qa_q, tokenizer),
+    #     'refine:',
+    #     _get_prompt_size(refine_q),
+    #     _get_prompt_size_tks(refine_q, tokenizer),
+    # )
 
+    # TODO: profile and ensure chunking respects llm ctx limits
     max_prompt = max(
         [text_qa_q, refine_q],
         key=lambda p: len(tokenizer(_format_prompt(p))),
     )
     text_chunks = [n.get_content(MetadataMode.LLM) for n in nodes]
+    # print([len(tokenizer(t)) for t in text_chunks], 'initial')
     if response_mode is ResponseMode.COMPACT:
         text_chunks = prompt_helper.repack(
             max_prompt, text_chunks, padding=padding, llm=llm
         )
+        # print([len(tokenizer(t)) for t in text_chunks], 'compacted')
+
     text_chunks = [
         c2
         for c in reversed(text_chunks)
@@ -134,6 +146,7 @@ async def synthesize(
     ]
     rstr: str | None = None
     while text_chunks:
+        # print([len(tokenizer(t)) for t in text_chunks], 'in loop')
         chunk = text_chunks.pop()
 
         if rstr is None:  # First chunk
@@ -147,6 +160,7 @@ async def synthesize(
             text_chunks += reversed(repacked)
             kwds = {'context_msg': chunk}
 
+        # print(f'<- {len(tokenizer(chunk))} to llm')
         if not llm.metadata.is_chat_model:
             raise ValueError('Expected chat LLM')
 
