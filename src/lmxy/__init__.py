@@ -9,6 +9,7 @@ from ._types import (
     Tokens,
     get_full_response,
 )
+from ._vectors import merge_cos_embeddings
 
 if TYPE_CHECKING:
     from ._llama_qdrant import (
@@ -33,12 +34,12 @@ else:
             'record_to_llama',
         ],
         '._llama_rerank': ['LlamaReranker'],
+        '._retry': ['aretry'],
         '._responses': [
             'get_full_response',
             'tokens_from_response',
             'unpack_response',
         ],
-        '._retry': ['aretry'],
         '.embed': ['Embedder'],
         '.fastembed': ['get_sparse_encoder'],
         '.openailike': ['OpenAiLike'],
@@ -80,6 +81,7 @@ __all__ = [
     'get_tokenizer',
     'glue_reps',
     'llama_to_record',
+    'merge_cos_embeddings',
     'no_think',
     'record_to_llama',
     'tokens_from_response',

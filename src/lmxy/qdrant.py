@@ -28,6 +28,7 @@ from qdrant_client.http.exceptions import UnexpectedResponse
 
 from ._retry import aretry
 from ._types import Embedding, SparseEncode
+from ._vectors import merge_cos_embeddings
 from .fastembed import get_sparse_encoder
 from .util import min_max
 
@@ -85,6 +86,7 @@ class Qdrant(BaseModel):
     query_timeout: float | None = None  # enable to batch upserts
     query_batch_size: int = 64
     retries: int | None = 3  # None = retry forever
+    max_similarity: float = 1.0  # <1 to prune multivectors
 
     # Collection construction parameters
     dense_config: qm.VectorParams = qm.VectorParams(
@@ -608,6 +610,7 @@ class Qdrant(BaseModel):
                 dense_field=self.dense_field_name,
                 sparse_field=self.sparse_field_name,
                 sparse_vec=sv,
+                max_similarity=self.max_similarity,
             )
             for r, sv in zip(recs, svs, strict=True)
         ]
@@ -685,10 +688,15 @@ def _record_to_qd(
     dense_field: str,
     sparse_field: str,
     sparse_vec: qm.SparseVector | None = None,
+    max_similarity: float = 1.0,
 ) -> qm.PointStruct:
     vector: dict[str, qm.Vector] = {}
     if dembs := record.get('embeddings'):
-        vector[dense_field] = dembs
+        vector[dense_field] = (
+            merge_cos_embeddings(dembs, max_similarity).tolist()
+            if max_similarity < 1 and len(dembs) > 1
+            else dembs
+        )
     if sparse_vec is not None:
         vector[sparse_field] = sparse_vec
     if not vector:
