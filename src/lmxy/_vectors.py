@@ -14,7 +14,9 @@ def merge_cos_embeddings(
     """
     Takes set of L2 normalized vectors and averages vectors that are too close.
     Returns new averaged and L2 normalized vectors.
+    Each member has cosine similarity of at least max_similarity to its center.
 
+    Negative thresholds use a pairwise similarity floor of zero.
     No-op for similarity >= 1.
     """
     vectors = np.asarray(vectors, np.float32)
@@ -29,22 +31,17 @@ def merge_cos_embeddings(
         return vectors  # (n d)
 
     # Do clustering
-    z = hierarchy.linkage(vectors, method='average', metric='cosine')
-    distances = z[:, 2]  # (n) of 0..2
-    n_clusters = np.count_nonzero(distances >= 1 - max_similarity) + 1  # C
-    assert n_clusters <= vectors.shape[0]
+    z = hierarchy.linkage(vectors, method='complete', metric='cosine')
 
-    # Assign labels
-    labels = hierarchy.fcluster(z, n_clusters, 'maxclust') - 1  # (n) of 0..C-1
+    # Nonnegative pairwise similarity also bounds similarity to the unit center
+    max_distance = 1 - max(0.0, max_similarity)
+    labels = hierarchy.fcluster(z, max_distance, criterion='distance') - 1
 
     # Average vector for each cluster (not L2 normalized)
     n_clusters = labels.max() + 1
-    sums = np.zeros((n_clusters, vectors.shape[1]), dtype=vectors.dtype)
-    np.add.at(sums, labels, vectors)
-    counts = np.bincount(labels, minlength=n_clusters)[:, None]
-    vectors = sums / counts  # (C d)
+    centers = np.zeros((n_clusters, vectors.shape[1]), dtype=np.float32)
+    np.add.at(centers, labels, vectors)
 
     # L2 norm
-    vectors /= np.linalg.vector_norm(vectors, axis=1, keepdims=True)
-
-    return vectors
+    centers /= np.linalg.vector_norm(centers, axis=1, keepdims=True)
+    return centers
