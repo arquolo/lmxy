@@ -14,6 +14,7 @@ from collections.abc import (
 from typing import Any, Literal, NotRequired, TypedDict, cast
 from uuid import UUID
 
+import qdrant_client.conversions.common_types as qcm
 import qdrant_client.http.models as qm
 from glow import streaming
 from grpc import RpcError, StatusCode
@@ -22,7 +23,6 @@ from loguru import logger
 from pydantic import BaseModel, Field, PrivateAttr, ValidationError
 from pydantic_core import to_json
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.conversions.common_types import QuantizationConfig
 from qdrant_client.fastembed_common import IDF_EMBEDDING_MODELS
 from qdrant_client.http.exceptions import UnexpectedResponse
 
@@ -100,7 +100,7 @@ class Qdrant(BaseModel):
     shard_number: int | None = None
     hnsw_config: qm.HnswConfigDiff | None = None
     optimizers_config: qm.OptimizersConfigDiff | None = None
-    quantization_config: QuantizationConfig | None = None
+    quantization_config: qm.QuantizationConfig | None = None
     kw_fields: list[str] = []  # For search
     int_fields: list[str] = []  # For search
     uuid_fields: list[str] = []  # For search
@@ -216,8 +216,8 @@ class Qdrant(BaseModel):
         tenant_schema = qm.KeywordIndexParams(
             type=qm.KeywordIndexType.KEYWORD, is_tenant=True
         )
-        name_n_schema = [
-            (field, tp)
+        name_n_schema: dict[str, qcm.PayloadSchemaType] = {
+            field: tp
             for tp, vs in [
                 (
                     qm.PayloadSchemaType.KEYWORD,
@@ -228,13 +228,14 @@ class Qdrant(BaseModel):
                 (qm.PayloadSchemaType.DATETIME, self.datetime_fields),
             ]
             for field in vs
-        ] + [(field, tenant_schema) for field in self.tenant_fields]
+        }
+        name_n_schema |= dict.fromkeys(self.tenant_fields, tenant_schema)
 
         # To improve search performance set up a payload index
         # for fields used in filters.
         # https://qdrant.tech/documentation/concepts/indexing
         async with TaskGroup() as tg:
-            for field_name, field_schema in name_n_schema:
+            for field_name, field_schema in name_n_schema.items():
                 aw = self.aclient.create_payload_index(
                     self.collection_name, field_name, field_schema
                 )
